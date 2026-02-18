@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cislunar-optical-nav"
+version = "0.1.0"
+description = "Cislunar optical navigation and midcourse correction analysis"
+authors = [{name = "Varsha Krishnakumar"}]
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["cislunar_optical_nav*","dynamics*", "nav*", "guidance*", "mc*", "utils*", "cv*"]
