@@ -1,11 +1,3 @@
-# scripts/01_propagate_cr3bp.py
-"""
-Propagate a simple CR3BP trajectory in the Earth–Moon system and visualize it.
-
-Run:
-  python scripts/01_propagate_cr3bp.py
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -17,18 +9,15 @@ from dynamics.integrators import propagate
 
 
 def main() -> None:
-    # --- 1) Earth–Moon mass parameter
     mu = 0.0121505856
     model = CR3BP(mu=mu, tiny=1e-12)
 
-    # --- 2) Lagrange points
-    L = model.lagrange_points()  # dict: "L1".. "L5" -> (3,)
+    L = model.lagrange_points()  
     print("Lagrange points (x,y,z):")
     for k in ["L1", "L2", "L3", "L4", "L5"]:
         v = L[k]
         print(f"  {k}: {v}")
 
-    # --- 3) Simple initial condition
     # Option A: near L1 with a small offset and small tangential velocity
     L1 = L["L1"]
     x0 = np.array([
@@ -47,7 +36,6 @@ def main() -> None:
     # --- 4) Propagate with SciPy wrapper, dense output enabled
     t0, tf = 0.0, 10.0
 
-    # Use a reasonable output grid for plotting (integration itself uses adaptive steps)
     t_plot = np.linspace(t0, tf, 5000)
 
     res = propagate(
@@ -55,7 +43,6 @@ def main() -> None:
         (t0, tf),
         x0,
         dense_output=True,
-        # You can tune these if you want tighter drift:
         rtol=1e-11,
         atol=1e-13,
         method="DOP853",
@@ -65,10 +52,8 @@ def main() -> None:
         print("Propagation FAILED:", res.message)
         return
 
-    # Evaluate dense solution at plotting times
     X = res.sol(t_plot).T  # (N,6) since SciPy sol returns (6,N)
 
-    # --- 5) Jacobi drift
     C0 = model.jacobi(x0)
     xf = X[-1]
     Cf = model.jacobi(xf)
@@ -78,7 +63,6 @@ def main() -> None:
     print(f"  Cf = {Cf:.16e}")
     print(f"  |Cf - C0| = {abs(Cf - C0):.16e}")
 
-    # --- 6) Plot x–y trajectory + primaries + L points
     p1 = model.primary1  # (-mu, 0, 0)
     p2 = model.primary2  # (1-mu, 0, 0)
 
@@ -96,10 +80,9 @@ def main() -> None:
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
-    ax.set_title("CR3BP Earth–Moon: x–y trajectory with primaries and L points")
+    ax.set_title("CR3BP Earth-Moon: x-y trajectory with primaries and L points")
     ax.grid(True, linewidth=0.5, alpha=0.6)
 
-    # Avoid a giant legend if you prefer; but it's handy at first.
     ax.legend(loc="best", fontsize=9)
 
     plt.tight_layout()

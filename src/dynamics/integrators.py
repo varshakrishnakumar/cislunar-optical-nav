@@ -1,20 +1,9 @@
-# integrators.py
-"""
-Generic integration utilities (model-agnostic).
-
-Provides:
-- propagate(): a single standard SciPy-based propagation wrapper
-- sample_at_times(): evaluate an integration result at arbitrary epochs
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence, Union, Any, Dict, List, Tuple
 
 import numpy as np
-
-# SciPy is required for this module.
 from scipy.integrate import solve_ivp
 
 

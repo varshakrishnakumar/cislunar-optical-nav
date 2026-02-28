@@ -1,4 +1,3 @@
-# crbp.py
 """
 CR3BP / crbp in normalized rotating frame with:
 - singularity protection via softening length `tiny`
@@ -26,7 +25,7 @@ Array = np.ndarray
 @dataclass(frozen=True)
 class CR3BP:
     mu: float
-    tiny: float = 1e-12  # softening length (normalized distance units)
+    tiny: float = 1e-12  
 
     def __post_init__(self) -> None:
         if not (0.0 < self.mu < 0.5):
@@ -42,9 +41,7 @@ class CR3BP:
     def primary2(self) -> Array:
         return np.array([1.0 - self.mu, 0.0, 0.0], dtype=float)
 
-    # -------------------------
-    # Singularity-protected distances
-    # -------------------------
+
     def r1_r2(self, x: float, y: float, z: float) -> Tuple[float, float]:
         """
         Returns (r1, r2) with softening:
@@ -61,9 +58,6 @@ class CR3BP:
         r2 = np.sqrt(dx2 * dx2 + y * y + z * z + tiny2)
         return float(r1), float(r2)
 
-    # -------------------------
-    # Potential and derivatives
-    # -------------------------
     def Omega(self, x: float, y: float, z: float) -> float:
         mu = self.mu
         r1, r2 = self.r1_r2(x, y, z)
@@ -88,9 +82,6 @@ class CR3BP:
         dOz = - (1.0 - mu) * z / r1_3 - mu * z / r2_3
         return np.array([dOx, dOy, dOz], dtype=float)
 
-    # -------------------------
-    # Dynamics
-    # -------------------------
     def eom(self, t: float, s: Array) -> Array:
         """
         Equations of motion in rotating frame.
@@ -114,10 +105,74 @@ class CR3BP:
         x, y, z = float(s[0]), float(s[1]), float(s[2])
         v2 = float(np.dot(s[3:6], s[3:6]))
         return float(2.0 * self.Omega(x, y, z) - v2)
+    
+    def hess_Omega(self, x: float, y: float, z: float) -> Array:
+        """
+        Hessian of Omega (3x3): [[Oxx,Oxy,Oxz],[Oxy,Oyy,Oyz],[Oxz,Oyz,Ozz]]
+        Includes softening via r1,r2 from r1_r2().
+        """
+        mu = self.mu
 
-    # -------------------------
-    # Lagrange points
-    # -------------------------
+        dx1 = x + mu
+        dx2 = x - (1.0 - mu)
+
+        r1, r2 = self.r1_r2(x, y, z)
+        r1_3 = r1**3
+        r2_3 = r2**3
+        r1_5 = r1**5
+        r2_5 = r2**5
+
+        def contrib(w: float, dx: float, dy: float, dz: float, r3: float, r5: float) -> Array:
+            # 3*di*dj/r^5 - delta_ij/r^3
+            xx = w * (3.0*dx*dx/r5 - 1.0/r3)
+            yy = w * (3.0*dy*dy/r5 - 1.0/r3)
+            zz = w * (3.0*dz*dz/r5 - 1.0/r3)
+            xy = w * (3.0*dx*dy/r5)
+            xz = w * (3.0*dx*dz/r5)
+            yz = w * (3.0*dy*dz/r5)
+            return np.array([[xx, xy, xz],
+                             [xy, yy, yz],
+                             [xz, yz, zz]], dtype=float)
+
+        H = np.zeros((3, 3), dtype=float)
+
+        # from 0.5*(x^2 + y^2)
+        H[0, 0] += 1.0
+        H[1, 1] += 1.0
+
+        # grav terms
+        H += contrib(1.0 - mu, dx1, y, z, r1_3, r1_5)
+        H += contrib(mu,        dx2, y, z, r2_3, r2_5)
+
+        return H
+
+    def A_matrix(self, t: float, s: Array) -> Array:
+        """
+        Dynamics Jacobian A = df/ds for CR3BP rotating-frame EOM.
+        """
+        x, y, z, vx, vy, vz = map(float, s)
+        H = self.hess_Omega(x, y, z)
+
+        A = np.zeros((6, 6), dtype=float)
+        # dx/dt = v
+        A[0, 3] = 1.0
+        A[1, 4] = 1.0
+        A[2, 5] = 1.0
+
+        # dv/dt terms
+        # ax = 2*vy + Ox
+        # ay = -2*vx + Oy
+        # az = Oz
+        A[3, 0:3] = H[0, :]
+        A[4, 0:3] = H[1, :]
+        A[5, 0:3] = H[2, :]
+
+        A[3, 4] = 2.0
+        A[4, 3] = -2.0
+
+        return A
+
+
     def _collinear_eq(self, x: float) -> float:
         # dOmega/dx at (x,0,0)
         return float(self.grad_Omega(x, 0.0, 0.0)[0])
