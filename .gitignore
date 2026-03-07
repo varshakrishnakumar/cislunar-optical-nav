@@ -1,13 +1,7 @@
-# Virtual environment
-.venv/
-
-# Python
+.cisopt/
 __pycache__/
 *.pyc
-
-# Data and outputs
+.vscode/
 results/
-data/
+.env
 
-# Mac
-.DS_Store

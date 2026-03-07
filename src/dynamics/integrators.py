@@ -83,7 +83,7 @@ def propagate(
         Times at which to store the computed solution. If None, uses solver internal steps.
     events : callable or list of callables, optional
         Event functions g(t, x) -> float. Passed through to solve_ivp.
-        You can set attributes on event functions:
+        Can set attributes on event functions:
             - event.terminal = True/False
             - event.direction = -1/0/+1
     dense_output : bool
@@ -118,8 +118,8 @@ def propagate(
         def rhs(t: float, x: Array) -> Array:
             return np.asarray(f(t, x), dtype=float).reshape(-1)
     else:
-        def rhs(t: float, x: Array) -> Array:
-            return np.asarray(f(t, x, *args), dtype=float).reshape(-1)
+        def rhs(t: float, x: Array, *a: Any) -> Array:
+            return np.asarray(f(t, x, *a), dtype=float).reshape(-1)
 
     # Events: pass through, but if args is provided, SciPy expects event(t, y, *args).
     events_pass = events

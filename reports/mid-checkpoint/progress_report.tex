@@ -2,6 +2,9 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{cite}
+\usepackage{amsfonts} 
+\usepackage{amssymb} 
+
 
 \title{Progress Report}
 \author{Varsha Krishnakumar}
@@ -12,20 +15,326 @@
 \maketitle
 
 \begin{abstract}
-This is the abstract of the progress report. It summarizes the main findings and contributions.
+
+Autonomous navigation in the Earth--Moon system is a critical capability for future cislunar missions. Traditional navigation architectures rely heavily on ground-based tracking; however, optical navigation offers a promising onboard alternative by exploiting line-of-sight measurements derived from camera imagery.
+
+This project investigates the feasibility of bearing-only optical navigation within the Circular Restricted Three-Body Problem (CR3BP) using simulated camera measurements. The goal is to evaluate whether spacecraft state estimation derived from pixel-based observations can support autonomous trajectory correction.
+
+The work is structured in progressive phases. The initial phase establishes the dynamical and estimation framework using idealized bearing measurements. Subsequent phases introduce increasingly realistic sensing constraints, including camera field-of-view limitations and measurement dropouts. Finally, the project investigates how autonomous sensor-pointing strategies can restore observability and maintain estimation performance.
+
+This report summarizes progress made toward building the simulation and estimation framework and outlines the remaining tasks required to evaluate robustness and autonomous sensor control.
 \end{abstract}
 
-\section{Introduction}
-This section introduces the topic of the progress report.
+\section{Methods}
 
-\section{Methodology}
-This section describes the methodology used in the research.
+\subsection{State, Dynamics, and Units}
+All navigation experiments estimate the spacecraft state in the Earth--Moon Circular Restricted Three-Body Problem (CR3BP). The EKF state is a 6D Cartesian position--velocity vector
+\begin{equation}
+\mathbf{x}(t) =
+\begin{bmatrix}
+\mathbf{r}(t) \\
+\mathbf{v}(t)
+\end{bmatrix}
+\in \mathbb{R}^6 \,,
+\end{equation}
+expressed in the rotating CR3BP frame. The continuous-time dynamics are
+\begin{equation}
+\dot{\mathbf{x}}(t) = \mathbf{f}\!\left(\mathbf{x}(t), \mu\right),
+\end{equation}
+where $\mu$ is the Earth--Moon mass parameter and $\mathbf{f}(\cdot)$ denotes the standard CR3BP equations of motion. Simulations are performed in nondimensional (ND) CR3BP units.
 
-\section{Results}
-This section presents the results obtained from the research.
+\subsection{EKF Time Update via CR3BP State Transition Matrix}
+To propagate covariance in the nonlinear CR3BP model, the filter integrates the combined state + state transition matrix (STM) variational equations. Define the STM
+\begin{equation}
+\boldsymbol{\Phi}(t,t_0) \triangleq \frac{\partial \mathbf{x}(t)}{\partial \mathbf{x}(t_0)} \in \mathbb{R}^{6\times 6}.
+\end{equation}
+The STM evolves according to the variational dynamics
+\begin{equation}
+\dot{\boldsymbol{\Phi}}(t,t_0) = \mathbf{A}(t)\,\boldsymbol{\Phi}(t,t_0), \qquad
+\boldsymbol{\Phi}(t_0,t_0)=\mathbf{I}_{6},
+\end{equation}
+where $\mathbf{A}(t)=\left.\frac{\partial \mathbf{f}}{\partial \mathbf{x}}\right|_{\mathbf{x}(t)}$ is the CR3BP Jacobian evaluated along the trajectory. In implementation, $\mathbf{x}$ and $\boldsymbol{\Phi}$ are concatenated into a single vector and numerically integrated from $t_0$ to $t_1$.
+
+The EKF prediction step is then
+\begin{align}
+\hat{\mathbf{x}}^-_{k+1} &= \mathbf{x}(t_{k+1}) \quad \text{(from integrating $\dot{\mathbf{x}}=\mathbf{f}$)},\\
+\mathbf{P}^-_{k+1} &= \boldsymbol{\Phi}_{k}\,\mathbf{P}^{+}_{k}\,\boldsymbol{\Phi}_{k}^{T} + \mathbf{Q}_{d},
+\end{align}
+where $\boldsymbol{\Phi}_{k}=\boldsymbol{\Phi}(t_{k+1},t_k)$ and $\mathbf{Q}_d$ is the discrete process noise covariance. Numerical symmetry is enforced by
+\begin{equation}
+\mathbf{P}^-_{k+1} \leftarrow \tfrac{1}{2}\left(\mathbf{P}^-_{k+1} + (\mathbf{P}^-_{k+1})^{T}\right).
+\end{equation}
+
+\subsection{Optical Bearing Measurement Model}
+
+Optical navigation measurements are modeled as line-of-sight (LOS) unit vectors from the spacecraft to a tracked target body. Let the spacecraft position be $\mathbf{r}_{sc}$ and the target position be $\mathbf{r}_{body}$. The ideal LOS vector is
+
+\begin{equation}
+\mathbf{u} =
+\frac{\mathbf{r}_{body}-\mathbf{r}_{sc}}
+{\left\|\mathbf{r}_{body}-\mathbf{r}_{sc}\right\|}
+\end{equation}
+
+where $\mathbf{u}\in\mathbb{R}^3$ is a normalized direction vector.
+
+Directly using the 3D unit vector in the EKF introduces redundancy due to the unit-norm constraint. Instead, measurements are projected onto a local tangent plane defined by two orthonormal basis vectors $\mathbf{e}_1,\mathbf{e}_2$ orthogonal to the predicted LOS direction. These vectors form the matrix
+
+\begin{equation}
+\mathbf{E} =
+\begin{bmatrix}
+\mathbf{e}_1^T \\
+\mathbf{e}_2^T
+\end{bmatrix}
+\in \mathbb{R}^{2\times3}
+\end{equation}
+
+which maps LOS errors into a 2D residual space.
+
+Let $\mathbf{u}_{meas}$ be the measured LOS unit vector. The EKF residual is then
+
+\begin{equation}
+\mathbf{y}_k =
+\mathbf{E}\left(\mathbf{u}_{meas}-\mathbf{u}_{pred}\right)
+\end{equation}
+
+which represents the angular error in the tangent plane.
+
+The measurement Jacobian is derived from the sensitivity of the LOS direction to spacecraft position. For range
+$\rho = \|\mathbf{r}_{body}-\mathbf{r}_{sc}\|$,
+
+\begin{equation}
+\frac{\partial \mathbf{u}}{\partial \mathbf{r}_{sc}} =
+-\frac{1}{\rho}
+\left(
+\mathbf{I}_3 - \mathbf{u}\mathbf{u}^T
+\right)
+\end{equation}
+
+and the EKF measurement matrix becomes
+
+\begin{equation}
+\mathbf{H} =
+\begin{bmatrix}
+\mathbf{E}
+\frac{\partial \mathbf{u}}{\partial \mathbf{r}_{sc}} & \mathbf{0}_{2\times3}
+\end{bmatrix}.
+\end{equation}
+
+The measurement noise covariance is
+
+\begin{equation}
+\mathbf{R} = \sigma_{\theta}^{2}\mathbf{I}_2
+\end{equation}
+
+where $\sigma_\theta$ is the angular noise standard deviation.
+
+The EKF update follows the standard nonlinear filtering equations using innovation covariance $\mathbf{S}$, Kalman gain $\mathbf{K}$, and covariance update.
+
+
+\subsection{Process Noise Model (Discrete White Acceleration)}
+To capture unmodeled accelerations and modeling error, the filter optionally includes a discrete white-acceleration process noise model on the position--velocity state. For timestep $\Delta t = t_{k+1}-t_k$, the implemented covariance is
+\begin{equation}
+\mathbf{Q}_{d}(\Delta t) =
+q_{a}
+\begin{bmatrix}
+\frac{\Delta t^{3}}{3}\mathbf{I}_{3} & \frac{\Delta t^{2}}{2}\mathbf{I}_{3}\\
+\frac{\Delta t^{2}}{2}\mathbf{I}_{3} & \Delta t\,\mathbf{I}_{3}
+\end{bmatrix},
+\end{equation}
+where $q_a$ is the (scalar) continuous acceleration spectral density parameter and $\mathbf{I}_3$ is the $3\times 3$ identity matrix. This matches the standard constant-acceleration discretization for a $[\mathbf{r};\mathbf{v}]$ state.
+
+\section{CR3BP Dynamical Environment}
+
+All simulations are performed in the Earth--Moon Circular Restricted Three-Body Problem (CR3BP). This model captures the nonlinear gravitational dynamics experienced by a spacecraft influenced by the Earth and Moon while neglecting the spacecraft's mass.
+
+The CR3BP framework provides a representative environment for cislunar navigation while remaining computationally tractable. The equations of motion are implemented in nondimensional units and propagated using numerical integration.
+
+Two representative trajectories are considered in this work. The first corresponds to a trajectory originating near the Earth, while the second corresponds to motion near the Earth--Moon $L_1$ region. These trajectories establish the dynamical environment used for subsequent navigation and estimation experiments.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.75\linewidth]{../../results/plots/01_cr3bp_nearEarth_trajectory.png}
+\caption{Example CR3BP trajectory originating near the Earth in the Earth--Moon system.}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.75\linewidth]{../../results/plots/01_cr3bp_nearL1_trajectory.png}
+\caption{Representative trajectory in the vicinity of the Earth--Moon $L_1$ region.}
+\end{figure}
+
+\section{Deterministic Targeting and Midcourse Correction}
+
+Before introducing navigation uncertainty, a deterministic targeting experiment was performed to establish a baseline guidance solution. A nominal trajectory was propagated from the initial state to a target position at the final time.
+
+To simulate realistic trajectory deviations, an off-nominal trajectory was generated by introducing a perturbation to the initial conditions. A single midcourse correction maneuver was then computed to steer the spacecraft back toward the desired terminal state.
+
+The targeting solution demonstrates that a single impulsive burn can significantly reduce trajectory deviation in the CR3BP environment. This deterministic framework later serves as the guidance component that will be driven by estimated states produced by the navigation filter.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\linewidth]{../../results/plots/02_targeting_demo_plot.png}
+\caption{Deterministic targeting demonstration showing nominal, perturbed, and corrected trajectories using a single midcourse burn.}
+\end{figure}
+
+\section{Bearing-Only State Estimation}
+
+An Extended Kalman Filter (EKF) was implemented to estimate the spacecraft state using line-of-sight measurements to a target object. In the initial formulation, ideal bearing vectors were generated directly from the relative position between the spacecraft and the target.
+
+The filter propagates the spacecraft state using the CR3BP dynamics while incorporating bearing measurements through the EKF update step. The state transition matrix (STM) is propagated simultaneously to support covariance propagation.
+
+Results show that the EKF successfully reduces both position and velocity estimation errors as measurements accumulate. This demonstrates that bearing-only measurements provide sufficient information to recover the spacecraft state in this dynamical environment under continuous measurement availability.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\linewidth]{../../results/plots/03_simulate_bearings_plot.png}
+\caption{EKF estimation errors using ideal bearing measurements in the CR3BP environment.}
+\end{figure}
+
+\section{Pixel-Based Optical Measurements}
+
+To introduce greater sensing realism, the ideal bearing measurements were replaced with pixel-based camera observations. A simplified camera model was implemented that projects the target location onto the image plane using a pinhole camera model.
+
+Pixel measurements are converted into normalized line-of-sight vectors that are subsequently used by the EKF measurement model. Measurement noise is introduced at the pixel level to simulate centroiding uncertainty.
+
+The resulting estimator performance remains stable, with estimation errors converging as measurements accumulate. Statistical consistency was evaluated using the Normalized Innovation Squared (NIS) metric, confirming that the filter remains reasonably consistent under the assumed measurement noise model.
+
+Statistical consistency of the filter is evaluated using the
+Normalized Innovation Squared (NIS),
+
+$$ NIS_k = y_k^T S_k^{-1} y_k $$
+
+Under correct noise modeling, the NIS should follow a
+$\chi^2$ distribution with two degrees of freedom.
+The NIS time history shown in Fig.~9 indicates that
+the filter remains broadly consistent under the assumed
+pixel measurement noise.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\linewidth]{../../results/plots/04_pixel_bearings_errors.png}
+\caption{EKF estimation performance using pixel-derived bearing measurements.}
+\end{figure}
+
+
+\section{Realistic Camera Sensing Constraints}
+
+A more realistic sensing model was introduced by incorporating camera field-of-view limitations and measurement dropouts. In this configuration, the camera maintains a fixed pointing direction while the spacecraft trajectory evolves through the CR3BP environment.
+
+Because the camera does not actively track the target, the object can drift toward the edge of the image plane or exit the field of view entirely. When the target is outside the camera field of view, measurements are unavailable and the EKF must rely solely on open-loop propagation.
+
+This scenario highlights a key limitation of passive sensing
+architectures: system observability depends strongly on sensor
+pointing and measurement availability.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\linewidth]{../../results/plots/05_camera_feed_split.png}
+\caption{Simulated camera view showing the target drifting within the image plane under fixed camera pointing.}
+\end{figure}
+
+This behavior highlights a key challenge in bearing-only
+navigation. When measurements become unavailable, the
+filter must rely solely on dynamic propagation. Because
+the CR3BP dynamics are highly nonlinear, covariance
+growth during these periods can quickly degrade state
+accuracy. This experiment therefore motivates the need
+for active sensor pointing strategies that maintain
+measurement availability. In bearing-only navigation, observability is fundamentally
+linked to relative geometry between the spacecraft and the
+target body. Maintaining the target within the field of view
+ensures that informative line-of-sight measurements continue
+to constrain the state estimate.
+
+\section{Navigation-Driven Midcourse Correction}
+
+The next step integrates navigation and guidance by computing midcourse correction maneuvers using the estimated spacecraft state rather than the true state. This experiment evaluates whether the EKF accuracy is sufficient to support autonomous trajectory correction.
+
+At a designated correction time $t_c$, the current state estimate produced by the EKF is used to compute the required impulsive maneuver to reach the desired terminal state. The resulting burn magnitude is compared to the ideal burn computed using the true state.
+
+Results show that the burn computed using the estimated state remains close to the ideal solution, with only a small increase in maneuver magnitude. This indicates that the navigation solution provides sufficient accuracy to support guidance decisions.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.65\linewidth]{../../results/plots/06_dv_compare.png}
+\caption{Comparison of ideal and EKF-based midcourse correction magnitudes.}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\linewidth]{../../results/plots/06_ekf_pos_error.png}
+\caption{EKF position error evolution prior to the midcourse correction time.}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\linewidth]{../../results/plots/06_ekf_nis.png}
+\caption{Normalized Innovation Squared (NIS) demonstrating reasonable filter consistency prior to the correction maneuver.}
+\end{figure}
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\linewidth]{../../results/plots/06_midcourse_traj.png}
+\caption{Trajectory comparison showing nominal, perturbed, and corrected trajectories using EKF-derived guidance.}
+\end{figure}
+
+
+These results suggest that the navigation solution
+produced by the EKF is sufficiently accurate to support
+guidance decisions in the CR3BP environment.
+Consequently, autonomous navigation based on optical
+measurements may be capable of replacing ground-based
+tracking for certain trajectory correction tasks.
+
+\newpage
+
+\section{Planned Work}
+
+The remaining work focuses on evaluating robustness and improving sensor autonomy.
+
+\subsection{Sensitivity Analysis (Phase 6B)}
+
+A sensitivity study will be conducted to evaluate how navigation performance degrades as a function of measurement noise and correction timing. Pixel measurement noise and correction time will be systematically varied, and the resulting maneuver cost and terminal miss distance will be recorded. This analysis will provide insight into the operating envelope of the navigation architecture.
+
+\subsection{Monte Carlo Robustness Study (Phase 6C)}
+
+A Monte Carlo campaign will be performed to evaluate navigation robustness under stochastic uncertainties. Random injection errors and measurement noise realizations will be sampled across multiple trials. Performance metrics such as maneuver cost inflation and terminal miss distance will be analyzed statistically to characterize system reliability.
+
+\subsection{Autonomous Camera Pointing (Phase 7)}
+
+The final phase of the project introduces an autonomous camera pointing strategy designed to maintain the target within the camera field of view. Instead of maintaining a fixed pointing direction, the spacecraft will adjust camera orientation based on the estimated line-of-sight vector to the target.
+
+This closed-loop sensor pointing approach is expected to reduce measurement dropouts and improve observability, thereby stabilizing filter performance in nonlinear dynamical regimes.
+
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.9\linewidth]{../../results/plots/state_diagram.png}
+    \caption{State Diagram}
+\end{figure}
+\newpage
 
 \section{Conclusion}
-This section concludes the report and discusses future work.
+
+This report presented progress toward a simulation
+framework for optical navigation in the Earth-Moon
+CR3BP environment. Initial experiments demonstrated
+that bearing-only measurements can successfully recover
+the spacecraft state when measurements are continuously
+available. Pixel-based measurements produced comparable
+performance while providing a more realistic sensing
+model.
+
+However, experiments with fixed camera pointing
+highlighted the sensitivity of the navigation solution
+to measurement availability. When the target leaves the
+field of view, filter uncertainty increases rapidly.
+
+Future work will therefore focus on robustness analysis
+through sensitivity and Monte Carlo studies, followed by
+the development of an autonomous camera pointing strategy
+designed to maintain measurement observability and
+improve navigation reliability in the nonlinear CR3BP
+environment.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

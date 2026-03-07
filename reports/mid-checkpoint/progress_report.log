@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024) (preloaded format=pdflatex 2025.1.17)  28 FEB 2026 09:20
+This is pdfTeX, Version 3.141592653-2.6-1.40.26 (TeX Live 2024) (preloaded format=pdflatex 2025.1.17)  7 MAR 2026 10:00
 entering extended mode
  restricted \write18 enabled.
  file:line:error style messages enabled.
@@ -109,6 +109,15 @@ File: pdftex.def 2022/09/22 v1.2b Graphics/color driver for pdftex
 LaTeX Info: Redefining \cite on input line 302.
 LaTeX Info: Redefining \nocite on input line 332.
 Package: cite 2015/02/27  v 5.5
+) (/usr/local/texlive/2024/texmf-dist/tex/latex/amsfonts/amsfonts.sty
+Package: amsfonts 2013/01/14 v3.01 Basic AMSFonts support
+\symAMSa=\mathgroup4
+\symAMSb=\mathgroup5
+LaTeX Font Info:    Redeclaring math symbol \hbar on input line 98.
+LaTeX Font Info:    Overwriting math alphabet `\mathfrak' in version `bold'
+(Font)                  U/euf/m/n --> U/euf/b/n on input line 106.
+) (/usr/local/texlive/2024/texmf-dist/tex/latex/amsfonts/amssymb.sty
+Package: amssymb 2013/01/14 v3.01 AMS font symbols
 ) (/usr/local/texlive/2024/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def
 File: l3backend-pdftex.def 2024-02-20 L3 backend support: PDF output (pdfTeX)
 \l__color_backend_stack_int=\count274
@@ -116,20 +125,20 @@ File: l3backend-pdftex.def 2024-02-20 L3 backend support: PDF output (pdfTeX)
 ) (./progress_report.aux)
 \openout1 = `progress_report.aux'.
 
-LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 10.
-LaTeX Font Info:    ... okay on input line 10.
-LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 10.
-LaTeX Font Info:    ... okay on input line 10.
-LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 10.
-LaTeX Font Info:    ... okay on input line 10.
-LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 10.
-LaTeX Font Info:    ... okay on input line 10.
-LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 10.
-LaTeX Font Info:    ... okay on input line 10.
-LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 10.
-LaTeX Font Info:    ... okay on input line 10.
-LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 10.
-LaTeX Font Info:    ... okay on input line 10.
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 13.
+LaTeX Font Info:    ... okay on input line 13.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 13.
+LaTeX Font Info:    ... okay on input line 13.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 13.
+LaTeX Font Info:    ... okay on input line 13.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 13.
+LaTeX Font Info:    ... okay on input line 13.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 13.
+LaTeX Font Info:    ... okay on input line 13.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 13.
+LaTeX Font Info:    ... okay on input line 13.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 13.
+LaTeX Font Info:    ... okay on input line 13.
  (/usr/local/texlive/2024/texmf-dist/tex/context/base/mkii/supp-pdf.mkii
 [Loading MPS to PDF converter (version 2006.09.02).]
 \scratchcounter=\count275
@@ -149,30 +158,153 @@ Package epstopdf-base Info: Redefining graphics rule for `.eps' on input line 48
  (/usr/local/texlive/2024/texmf-dist/tex/latex/latexconfig/epstopdf-sys.cfg
 File: epstopdf-sys.cfg 2010/07/13 v1.3 Configuration of (r)epstopdf for TeX Live
 ))
-No file progress_report.bbl.
+LaTeX Font Info:    Trying to load font information for U+msa on input line 15.
+ (/usr/local/texlive/2024/texmf-dist/tex/latex/amsfonts/umsa.fd
+File: umsa.fd 2013/01/14 v3.01 AMS symbols A
+)
+LaTeX Font Info:    Trying to load font information for U+msb on input line 15.
+ (/usr/local/texlive/2024/texmf-dist/tex/latex/amsfonts/umsb.fd
+File: umsb.fd 2013/01/14 v3.01 AMS symbols B
+)
+Underfull \hbox (badness 1033) in paragraph at lines 23--24
+[]\OT1/cmr/m/n/10 The work is struc-tured in pro-gres-sive phases.
+ []
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+
+Underfull \hbox (badness 1303) in paragraph at lines 39--41
+\OT1/cmr/m/n/10 expressed in the ro-tat-ing CR3BP frame. The
+ []
+
 [1{/usr/local/texlive/2024/texmf-var/fonts/map/pdftex/updmap/pdftex.map}
 
 
+]
+Underfull \hbox (badness 10000) in paragraph at lines 68--68
+[]\OT1/cmr/bx/n/12 Optical Bear-ing Mea-sure-ment
+ []
 
-] (./progress_report.aux)
+
+Underfull \hbox (badness 1577) in paragraph at lines 134--134
+[]\OT1/cmr/bx/n/12 Process Noise Model (Dis-crete
+ []
+
+[2]
+<../../results/plots/01_cr3bp_nearEarth_trajectory.png, id=25, 722.7pt x 578.16pt>
+File: ../../results/plots/01_cr3bp_nearEarth_trajectory.png Graphic file (type png)
+<use ../../results/plots/01_cr3bp_nearEarth_trajectory.png>
+Package pdftex.def Info: ../../results/plots/01_cr3bp_nearEarth_trajectory.png  used on input line 156.
+(pdftex.def)             Requested size: 172.125pt x 137.69377pt.
+<../../results/plots/01_cr3bp_nearL1_trajectory.png, id=27, 722.7pt x 578.16pt>
+File: ../../results/plots/01_cr3bp_nearL1_trajectory.png Graphic file (type png)
+<use ../../results/plots/01_cr3bp_nearL1_trajectory.png>
+Package pdftex.def Info: ../../results/plots/01_cr3bp_nearL1_trajectory.png  used on input line 162.
+(pdftex.def)             Requested size: 172.125pt x 137.69377pt.
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+<../../results/plots/02_targeting_demo_plot.png, id=28, 578.16pt x 505.89pt>
+File: ../../results/plots/02_targeting_demo_plot.png Graphic file (type png)
+<use ../../results/plots/02_targeting_demo_plot.png>
+Package pdftex.def Info: ../../results/plots/02_targeting_demo_plot.png  used on input line 176.
+(pdftex.def)             Requested size: 195.0764pt x 170.68803pt.
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+ [3 <../../results/plots/01_cr3bp_nearEarth_trajectory.png> <../../results/plots/01_cr3bp_nearL1_trajectory.png> <../../results/plots/02_targeting_demo_plot.png>]
+Underfull \hbox (badness 1314) in paragraph at lines 186--187
+\OT1/cmr/m/n/10 sure-ments ac-cu-mu-late. This demon-strates that
+ []
+
+<../../results/plots/03_simulate_bearings_plot.png, id=35, 578.16pt x 505.89pt>
+File: ../../results/plots/03_simulate_bearings_plot.png Graphic file (type png)
+<use ../../results/plots/03_simulate_bearings_plot.png>
+Package pdftex.def Info: ../../results/plots/03_simulate_bearings_plot.png  used on input line 190.
+(pdftex.def)             Requested size: 195.0764pt x 170.68803pt.
+
+Underfull \hbox (badness 7963) in paragraph at lines 194--194
+[]\OT1/cmr/bx/n/14.4 Pixel-Based Op-ti-cal Mea-
+ []
+
+
+Underfull \vbox (badness 10000) has occurred while \output is active []
+
+<../../results/plots/04_pixel_bearings_errors.png, id=36, 794.97pt x 505.89pt>
+File: ../../results/plots/04_pixel_bearings_errors.png Graphic file (type png)
+<use ../../results/plots/04_pixel_bearings_errors.png>
+Package pdftex.def Info: ../../results/plots/04_pixel_bearings_errors.png  used on input line 215.
+(pdftex.def)             Requested size: 206.5486pt x 131.43565pt.
+
+Underfull \hbox (badness 10000) in paragraph at lines 220--220
+[]\OT1/cmr/bx/n/14.4 Realistic Cam-era Sens-ing
+ []
+
+[4 <../../results/plots/03_simulate_bearings_plot.png> <../../results/plots/04_pixel_bearings_errors.png>]
+<../../results/plots/05_camera_feed_split.png, id=42, 1130.2225pt x 410.53375pt>
+File: ../../results/plots/05_camera_feed_split.png Graphic file (type png)
+<use ../../results/plots/05_camera_feed_split.png>
+Package pdftex.def Info: ../../results/plots/05_camera_feed_split.png  used on input line 232.
+(pdftex.def)             Requested size: 206.5486pt x 75.02045pt.
+
+Underfull \hbox (badness 10000) in paragraph at lines 249--249
+[]\OT1/cmr/bx/n/14.4 Navigation-Driven Mid-
+ []
+
+<../../results/plots/06_dv_compare.png, id=43, 542.025pt x 346.896pt>
+File: ../../results/plots/06_dv_compare.png Graphic file (type png)
+<use ../../results/plots/06_dv_compare.png>
+Package pdftex.def Info: ../../results/plots/06_dv_compare.png  used on input line 259.
+(pdftex.def)             Requested size: 149.1736pt x 95.46814pt.
+<../../results/plots/06_ekf_pos_error.png, id=44, 650.43pt x 346.896pt>
+File: ../../results/plots/06_ekf_pos_error.png Graphic file (type png)
+<use ../../results/plots/06_ekf_pos_error.png>
+Package pdftex.def Info: ../../results/plots/06_ekf_pos_error.png  used on input line 265.
+(pdftex.def)             Requested size: 206.5486pt x 110.15677pt.
+<../../results/plots/06_ekf_nis.png, id=45, 650.43pt x 346.896pt>
+File: ../../results/plots/06_ekf_nis.png Graphic file (type png)
+<use ../../results/plots/06_ekf_nis.png>
+Package pdftex.def Info: ../../results/plots/06_ekf_nis.png  used on input line 271.
+(pdftex.def)             Requested size: 206.5486pt x 110.15677pt.
+<../../results/plots/06_midcourse_traj.png, id=46, 650.43pt x 542.025pt>
+File: ../../results/plots/06_midcourse_traj.png Graphic file (type png)
+<use ../../results/plots/06_midcourse_traj.png>
+Package pdftex.def Info: ../../results/plots/06_midcourse_traj.png  used on input line 276.
+(pdftex.def)             Requested size: 206.5486pt x 172.11996pt.
+[5 <../../results/plots/05_camera_feed_split.png> <../../results/plots/06_dv_compare.png>]
+Underfull \hbox (badness 8075) in paragraph at lines 302--302
+[]\OT1/cmr/bx/n/12 Autonomous Cam-era Point-ing
+ []
+
+<../../results/plots/state_diagram.png, id=52, 882.4167pt x 466.8642pt>
+File: ../../results/plots/state_diagram.png Graphic file (type png)
+<use ../../results/plots/state_diagram.png>
+Package pdftex.def Info: ../../results/plots/state_diagram.png  used on input line 311.
+(pdftex.def)             Requested size: 206.5486pt x 109.27855pt.
+[6 <../../results/plots/06_ekf_pos_error.png> <../../results/plots/06_ekf_nis.png> <../../results/plots/06_midcourse_traj.png>]
+No file progress_report.bbl.
+[7
+
+ <../../results/plots/state_diagram.png>] (./progress_report.aux)
  ***********
 LaTeX2e <2023-11-01> patch level 1
 L3 programming layer <2024-02-20>
  ***********
  ) 
 Here is how much of TeX's memory you used:
- 2101 strings out of 474116
- 32058 string characters out of 5743682
- 1928187 words of memory out of 5000000
- 24477 multiletter control sequences out of 15000+600000
- 562383 words of font info for 51 fonts, out of 8000000 for 9000
+ 2740 strings out of 474116
+ 42562 string characters out of 5743682
+ 1944187 words of memory out of 5000000
+ 25088 multiletter control sequences out of 15000+600000
+ 568381 words of font info for 75 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 57i,8n,65p,310b,228s stack positions out of 10000i,1000n,20000p,200000b,200000s
-</usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmr12.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb>
-Output written on progress_report.pdf (1 page, 50969 bytes).
+ 57i,14n,65p,551b,249s stack positions out of 10000i,1000n,20000p,200000b,200000s
+</usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx7.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmex10.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi5.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi7.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmr12.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmr5.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmr7.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy7.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/symbols/msam10.pfb></usr/local/texlive/2024/texmf-dist/fonts/type1/public/amsfonts/symbols/msbm10.pfb>
+Output written on progress_report.pdf (7 pages, 1812145 bytes).
 PDF statistics:
- 28 PDF objects out of 1000 (max. 8388607)
- 16 compressed objects within 1 object stream
+ 131 PDF objects out of 1000 (max. 8388607)
+ 67 compressed objects within 1 object stream
  0 named destinations out of 1000 (max. 500000)
- 1 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 56 words of extra memory for PDF output out of 10000 (max. 10000000)
 
