@@ -1,31 +1,3 @@
-
-"""
-scripts/06_sensitivity.py
-
-06B — Sensitivity Sweep (wrap 06A in loops + log results + plot curves)
-
-Goal:
-  quantify how measurement quality (sigma_px) and correction timing (tc) affect
-  ΔV inflation and terminal miss distance.
-
-Creates:
-  results/plots/06b_sensitivity.csv
-  results/plots/06b_dv_inflation_vs_sigma.png
-  results/plots/06b_miss_vs_sigma.png
-  results/plots/06b_poserr_tc_vs_sigma.png
-  results/plots/06b_dv_inflation_vs_tc.png
-  results/plots/06b_miss_vs_tc.png
-  results/plots/06b_poserr_tc_vs_tc.png
-
-Bonus (dropout + fixed camera pointing):
-  results/plots/06b_bonus_dv_inflation_vs_sigma.png
-  results/plots/06b_bonus_miss_vs_sigma.png
-  results/plots/06b_bonus_poserr_tc_vs_sigma.png
-
-Run:
-  ./run.sh scripts/06_sensitivity.py
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -51,7 +23,7 @@ def _load_run_case():
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Failed to load module spec for {cand}")
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    spec.loader.exec_module(mod)  
 
     if not hasattr(mod, "run_case"):
         raise AttributeError(f"{cand} does not define run_case(...)")
@@ -63,7 +35,6 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
     if not rows:
         raise ValueError("No rows to write")
 
-    # stable column order
     fieldnames = list(rows[0].keys())
     with path.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -98,7 +69,6 @@ def main() -> None:
     plots_dir = Path("results/plots")
     plots_dir.mkdir(parents=True, exist_ok=True)
 
-    # Baseline scenario (matches handout defaults / 06A defaults)
     mu = 0.0121505856
     t0 = 0.0
     tf = 6.0
@@ -111,9 +81,6 @@ def main() -> None:
 
     rows: list[dict] = []
 
-    # -----------------------
-    # Phase 1: 1D sigma sweep
-    # -----------------------
     tc_fixed = 2.0
     dropout_prob = 0.0
     sigma_grid = [0.5, 1.0, 1.5, 2.0, 3.0, 5.0]
@@ -147,7 +114,6 @@ def main() -> None:
             "valid_rate": float(out["valid_rate"]),
         })
 
-    # Plot Phase 1
     sigma_arr = np.array([r["sigma_px"] for r in rows if r["sweep"] == "sigma" and r["bonus"] == 0], dtype=float)
     dv_infl = np.array([r["dv_inflation"] for r in rows if r["sweep"] == "sigma" and r["bonus"] == 0], dtype=float)
     miss_ekf = np.array([r["miss_ekf"] for r in rows if r["sweep"] == "sigma" and r["bonus"] == 0], dtype=float)
@@ -175,9 +141,6 @@ def main() -> None:
         outpath=plots_dir / "06b_poserr_tc_vs_sigma.png",
     )
 
-    # -------------------
-    # Phase 2: 1D tc sweep
-    # -------------------
     sigma_fixed = 1.5
     tc_grid = [0.8, 1.2, 1.6, 2.0, 2.5, 3.0]
 
@@ -237,9 +200,6 @@ def main() -> None:
         outpath=plots_dir / "06b_poserr_tc_vs_tc.png",
     )
 
-    # ----------------------------------------------------------
-    # Bonus: dropout + fixed camera pointing (motivates 07 later)
-    # ----------------------------------------------------------
     dropout_prob_bonus = 0.05
     tc_bonus = 2.0
 
@@ -299,7 +259,6 @@ def main() -> None:
         outpath=plots_dir / "06b_bonus_poserr_tc_vs_sigma.png",
     )
 
-    # ---- Save CSV at end
     csv_path = plots_dir / "06b_sensitivity.csv"
     _write_csv(csv_path, rows)
 
