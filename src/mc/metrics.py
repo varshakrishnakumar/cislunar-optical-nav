@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import numpy as np
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
-from .types import TrialResult
+import numpy as np
+
+from .types import CameraMode, TrialResult
 
 
 def trial_result_from_run_case(
@@ -13,31 +14,42 @@ def trial_result_from_run_case(
     tc: float,
     sigma_px: float,
     dropout_prob: float,
-    tracking_attitude: bool,
+    camera_mode: str,
     dx0: np.ndarray,
     out: Dict[str, Any],
 ) -> TrialResult:
-    """Convert the output dict of 06A `run_case` into a typed TrialResult."""
-
-    # 06A outputs we expect (scalar metrics)
     dv_perfect_mag = float(out["dv_perfect_mag"])
-    dv_ekf_mag = float(out["dv_ekf_mag"])
-    dv_delta_mag = float(out["dv_delta_mag"])
-    dv_inflation = float(out.get("dv_inflation", dv_ekf_mag - dv_perfect_mag))
-    dv_inflation_pct = float(out.get("dv_inflation_pct", dv_ekf_mag / dv_perfect_mag - 1.0))
+    dv_ekf_mag     = float(out["dv_ekf_mag"])
+    dv_delta_mag   = float(out["dv_delta_mag"])
 
-    miss_unc = float(out["miss_uncorrected"])
-    miss_perf = float(out["miss_perfect"])
-    miss_ekf = float(out["miss_ekf"])
+    dv_inflation = float(
+        out["dv_inflation"]
+        if "dv_inflation" in out
+        else dv_ekf_mag - dv_perfect_mag
+    )
 
-    pos_err_tc = float(out["pos_err_tc"])
+    if "dv_inflation_pct" in out:
+        dv_inflation_pct = float(out["dv_inflation_pct"])
+    elif dv_perfect_mag == 0.0:
+        dv_inflation_pct = float("nan")
+    else:
+        dv_inflation_pct = dv_ekf_mag / dv_perfect_mag - 1.0
+
+    miss_uncorrected = float(out["miss_uncorrected"])
+    miss_perfect     = float(out["miss_perfect"])
+    miss_ekf         = float(out["miss_ekf"])
+
+    pos_err_tc   = float(out["pos_err_tc"])
     tracePpos_tc = float(out["tracePpos_tc"])
-    nis_mean = float(out["nis_mean"])
-    valid_rate = float(out["valid_rate"])
+    nis_mean     = float(out["nis_mean"])
+    valid_rate   = float(out["valid_rate"])
 
-    dx0 = np.asarray(dx0, dtype=float).reshape(6,)
+    dx0 = np.asarray(dx0, dtype=float).reshape(6)
     dx0_norm_r = float(np.linalg.norm(dx0[:3]))
     dx0_norm_v = float(np.linalg.norm(dx0[3:]))
+
+    _notes = out.get("notes")
+    notes: Optional[str] = str(_notes) if _notes is not None else None
 
     return TrialResult(
         trial_id=trial_id,
@@ -45,14 +57,14 @@ def trial_result_from_run_case(
         tc=float(tc),
         sigma_px=float(sigma_px),
         dropout_prob=float(dropout_prob),
-        tracking_attitude=bool(tracking_attitude),
+        camera_mode=str(camera_mode),
         dv_perfect_mag=dv_perfect_mag,
         dv_ekf_mag=dv_ekf_mag,
         dv_delta_mag=dv_delta_mag,
         dv_inflation=dv_inflation,
         dv_inflation_pct=dv_inflation_pct,
-        miss_uncorrected=miss_unc,
-        miss_perfect=miss_perf,
+        miss_uncorrected=miss_uncorrected,
+        miss_perfect=miss_perfect,
         miss_ekf=miss_ekf,
         pos_err_tc=pos_err_tc,
         tracePpos_tc=tracePpos_tc,
@@ -60,5 +72,5 @@ def trial_result_from_run_case(
         valid_rate=valid_rate,
         dx0_norm_r=dx0_norm_r,
         dx0_norm_v=dx0_norm_v,
-        notes=str(out.get("notes")) if out.get("notes") is not None else None,
+        notes=notes,
     )

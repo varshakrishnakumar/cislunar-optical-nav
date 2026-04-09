@@ -1,23 +1,64 @@
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal
 
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import numpy as np
+from scipy.stats import chi2
 
-# Repo imports (your project layout)
-from dynamics.cr3bp import CR3BP, propagate
+from dynamics.cr3bp import CR3BP
+from dynamics.integrators import propagate
 from nav.ekf import ekf_propagate_cr3bp_stm
 from nav.measurements.bearing import bearing_update_tangent
 from nav.measurements.pixel_bearing import pixel_detection_to_bearing
+from cv.camera import Intrinsics
+from cv.pointing import camera_dcm_from_boresight
 from cv.sim_measurements import simulate_pixel_measurement
-from cv.camera import CameraIntrinsics
-
-# From 02 (your targeting solver)
 from guidance.targeting import solve_single_impulse_position_target
+
+
+CameraMode = Literal["fixed", "truth_tracking", "estimate_tracking"]
+_VALID_CAMERA_MODES = ("fixed", "truth_tracking", "estimate_tracking")
+
+
+_BG     = "#080B14"
+_PANEL  = "#0E1220"
+_BORDER = "#1C2340"
+_TEXT   = "#DCE0EC"
+_DIM    = "#5A6080"
+_CYAN   = "#22D3EE"
+_AMBER  = "#F59E0B"
+_GREEN  = "#10B981"
+_VIOLET = "#8B5CF6"
+_RED    = "#F43F5E"
+_ORANGE = "#FB923C"
+_MOON_C = "#C8CDD8"
+_EARTH_C= "#3B82F6"
+
+
+def _apply_dark_theme() -> None:
+    plt.rcParams.update({
+        "figure.facecolor":  _BG,
+        "axes.facecolor":    _PANEL,
+        "axes.edgecolor":    _BORDER,
+        "axes.labelcolor":   _TEXT,
+        "axes.titlecolor":   _TEXT,
+        "text.color":        _TEXT,
+        "xtick.color":       _TEXT,
+        "ytick.color":       _TEXT,
+        "grid.color":        _BORDER,
+        "grid.alpha":        1.0,
+        "grid.linestyle":    "--",
+        "lines.linewidth":   2.0,
+        "legend.facecolor":  _PANEL,
+        "legend.edgecolor":  _BORDER,
+        "legend.labelcolor": _TEXT,
+        "savefig.facecolor": _BG,
+        "savefig.edgecolor": _BG,
+        "font.size":         11,
+    })
 
 
 def _ensure_dir(p: Path) -> None:
@@ -32,84 +73,22 @@ def _nearest_index(t_grid: np.ndarray, t: float) -> int:
     return int(np.argmin(np.abs(t_grid - t)))
 
 
-def _plot_traj(
-    xs_nom: np.ndarray,
-    xs_true_unc: np.ndarray,
-    xs_true_perf: np.ndarray,
-    xs_true_ekf: np.ndarray,
-    outpath: Path,
-) -> None:
-    plt.figure()
-    plt.plot(xs_nom[:, 0], xs_nom[:, 1], label="nominal")
-    plt.plot(xs_true_unc[:, 0], xs_true_unc[:, 1], label="truth uncorrected")
-    plt.plot(xs_true_perf[:, 0], xs_true_perf[:, 1], label="truth corrected (perfect)")
-    plt.plot(xs_true_ekf[:, 0], xs_true_ekf[:, 1], label="truth corrected (EKF)")
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.title("Midcourse correction trajectories")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
-    plt.close()
+def _make_camera() -> tuple[Intrinsics, np.ndarray]:
+    intr    = Intrinsics(fx=400., fy=400., cx=320., cy=240., width=640, height=480)
+    R_fixed = np.eye(3, dtype=float)
+    return intr, R_fixed
 
 
-def _plot_pos_err(t: np.ndarray, pos_err: np.ndarray, outpath: Path) -> None:
-    plt.figure()
-    plt.plot(t, pos_err)
-    plt.xlabel("t")
-    plt.ylabel("||r_hat - r_true||")
-    plt.title("EKF position error vs time (to tc)")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
-    plt.close()
+def _resolve_camera_mode(camera_mode: Any) -> str:
+    if isinstance(camera_mode, bool):
+        return "fixed" if camera_mode else "estimate_tracking"
+    s = str(camera_mode).strip().lower()
+    if s not in _VALID_CAMERA_MODES:
+        raise ValueError(
+            f"camera_mode must be one of {_VALID_CAMERA_MODES}, got {camera_mode!r}"
+        )
+    return s
 
-
-def _plot_nis(t: np.ndarray, nis: np.ndarray, outpath: Path) -> None:
-    plt.figure()
-    plt.plot(t, nis)
-    plt.xlabel("t")
-    plt.ylabel("NIS")
-    plt.title("NIS vs time (to tc)")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
-    plt.close()
-
-
-def _plot_dv_bar(dv_perf: np.ndarray, dv_ekf: np.ndarray, outpath: Path) -> None:
-    dv_perf_mag = _norm(dv_perf)
-    dv_ekf_mag = _norm(dv_ekf)
-    dv_delta = _norm(dv_ekf - dv_perf)
-
-    plt.figure()
-    plt.bar([0, 1, 2], [dv_perf_mag, dv_ekf_mag, dv_delta])
-    plt.xticks([0, 1, 2], ["|dv| perfect", "|dv| ekf", "||Δdv||"])
-    plt.ylabel("Δv magnitude")
-    plt.title("Δv comparison")
-    plt.grid(True, axis="y", alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(outpath, dpi=200)
-    plt.close()
-
-
-def _make_camera() -> Tuple[CameraIntrinsics, np.ndarray]:
-    """
-    Returns:
-      intr: camera intrinsics
-      R_cam_from_frame: camera rotation wrt 'frame' (global)
-    """
-    intr = CameraIntrinsics(
-        fx=400.0,
-        fy=400.0,
-        cx=320.0,
-        cy=240.0,
-        width=640,
-        height=480,
-    )
-    R_cam_from_frame = np.eye(3)
-    return intr, R_cam_from_frame
 
 
 def run_case(
@@ -124,254 +103,324 @@ def run_case(
     dx0: np.ndarray,
     est_err: np.ndarray,
     *,
-    fixed_camera_pointing: bool = False,
+    camera_mode: CameraMode = "estimate_tracking",
 ) -> Dict[str, Any]:
-    """
-    Single-run pipeline for 06A.
+    camera_mode = _resolve_camera_mode(camera_mode)
 
-    Returns a dict with (at least):
-      dv_perfect_mag, dv_ekf_mag, dv_delta_mag,
-      miss_uncorrected, miss_perfect, miss_ekf,
-      pos_err_tc, tracePpos_tc,
-      valid_rate, nis_mean
-    """
-    rng = np.random.default_rng(int(seed))
+    rng    = np.random.default_rng(int(seed))
+    model  = CR3BP(mu=float(mu))
 
-    model = CR3BP(mu=mu)
+    L1x    = model.lagrange_points()["L1"][0]
+    x0_nom = np.array([L1x - 1e-3, 0.0, 0.0, 0.0, 0.05, 0.0], dtype=float)
+    x0_true = x0_nom + np.asarray(dx0, dtype=float).reshape(6)
+    r_body  = np.array([1.0 - float(mu), 0.0, 0.0], dtype=float)
 
-    # nominal initial near L1 
-    x0_nom = np.array([1.02, 0.0, 0.0, 0.0, -0.18, 0.0], dtype=float)
+    res_nom = propagate(model.eom, (float(t0), float(tf)), x0_nom,
+                        t_eval=np.linspace(t0, tf, 2001), rtol=1e-11, atol=1e-13)
+    if not res_nom.success:
+        raise RuntimeError(f"Nominal propagation failed: {res_nom.message}")
+    r_target = res_nom.x[-1, :3].copy()
 
-    # dense nominal propagation to tf for r_target
-    t_dense = np.linspace(t0, tf, 2001)
-    xs_nom = propagate(model, x0_nom, t_dense)
-    r_target = xs_nom[-1, :3].copy()
+    t_meas   = np.arange(float(t0), float(tf) + 1e-12, float(dt_meas))
+    res_true = propagate(model.eom, (float(t0), float(tf)), x0_true,
+                         t_eval=t_meas, rtol=1e-11, atol=1e-13)
+    if not res_true.success:
+        raise RuntimeError(f"Truth propagation failed: {res_true.message}")
+    xs_true = res_true.x
 
-    x0_true = (x0_nom + dx0).copy()
-    t_meas = np.arange(t0, tf + 1e-12, dt_meas)
-    xs_true = propagate(model, x0_true, t_meas)
+    intr, R_fixed = _make_camera()
 
-    intr, R_cam_from_frame0 = _make_camera()
-
-    u_meas_global: List[np.ndarray] = []
-    R_cam_from_frame_hist: List[np.ndarray] = []
-    valid_hist: List[bool] = []
-
-    for k, tk in enumerate(t_meas):
-        xk_true = xs_true[k]
-        r_sc = xk_true[:3]
-
-        # Choose observed body: Moon position in CR3BP is (1-mu,0,0)
-        r_body = np.array([1.0 - mu, 0.0, 0.0], dtype=float)
-
-        # "tracking attitude" vs "fixed pointing" for camera rotation history
-        if fixed_camera_pointing:
-            R_cam_from_frame = R_cam_from_frame0
-        else:
-            # simple "track" by keeping camera aligned with LOS direction:
-            los = r_body - r_sc
-            los = los / (np.linalg.norm(los) + 1e-12)
-            # Build a crude camera frame with z-axis along LOS
-            z = los
-            # pick an arbitrary up that is not parallel
-            up = np.array([0.0, 0.0, 1.0])
-            if abs(float(np.dot(up, z))) > 0.95:
-                up = np.array([0.0, 1.0, 0.0])
-            x = np.cross(up, z)
-            x = x / (np.linalg.norm(x) + 1e-12)
-            y = np.cross(z, x)
-            R_frame_from_cam = np.stack([x, y, z], axis=1)  # columns are cam axes in frame
-            R_cam_from_frame = R_frame_from_cam.T
-
-        R_cam_from_frame_hist.append(R_cam_from_frame)
-
-        # dropout
-        if rng.random() < float(dropout_prob):
-            valid_hist.append(False)
-            u_meas_global.append(np.full(3, np.nan))
-            continue
-
-        # simulate pixel measurement (u,v)
-        u_px, v_px, _ = simulate_pixel_measurement(
-            r_sc=r_sc,
-            r_body=r_body,
-            intr=intr,
-            R_cam_from_frame=R_cam_from_frame,
-            sigma_px=float(sigma_px),
-            rng=rng,
-        )
-
-        # convert pixel->bearing in global frame
-        # pixel_detection_to_bearing expects R_frame_from_cam
-        R_frame_from_cam = R_cam_from_frame.T
-        u_global, sigma_theta = pixel_detection_to_bearing(u_px, v_px, float(sigma_px), intr, R_frame_from_cam)
-
-        valid_hist.append(True)
-        u_meas_global.append(np.array(u_global, dtype=float))
-
-    u_meas_global_arr = np.asarray(u_meas_global)
-    valid_arr = np.asarray(valid_hist, dtype=bool)
-
-
-    x_hat = (x0_nom + est_err).copy()  # init estimate about nominal state, not true state
-
-    P = np.diag([1e-6] * 6).astype(float)
-    q_acc = 0.0  
-
-    x_hat_hist = []
-    P_hist = []
-    nis_hist = []
-    pos_err_hist = []
-
-    k_tc = _nearest_index(t_meas, tc)
+    k_tc   = _nearest_index(t_meas, float(tc))
     tc_eff = float(t_meas[k_tc])
 
+    x_hat = x0_nom + np.asarray(est_err, dtype=float).reshape(6)
+    P     = np.diag([1e-6] * 6).astype(float)
+    q_acc = 1e-14
+
+    x_hat_hist:  list[np.ndarray] = []
+    nis_list:    list[float]       = []
+    pos_err_list: list[float]      = []
+    P_diag_list: list[np.ndarray]  = []
+    valid_arr    = np.zeros(k_tc + 1, dtype=bool)
+
     for k in range(1, k_tc + 1):
-        t_prev = float(t_meas[k - 1])
-        t_curr = float(t_meas[k])
+        x_hat, P, _ = ekf_propagate_cr3bp_stm(
+            mu=float(mu), x=x_hat, P=P,
+            t0=float(t_meas[k - 1]), t1=float(t_meas[k]), q_acc=q_acc,
+        )
 
-        x_hat, P, _Phi = ekf_propagate_cr3bp_stm(mu, x_hat, P, t_prev, t_curr, q_acc)
-
-        if valid_arr[k]:
-            r_body = np.array([1.0 - mu, 0.0, 0.0], dtype=float)
-            u_meas = u_meas_global_arr[k]
-            sigma_theta = None  
-            sigma_theta = 1e-3 + 0.0 * float(sigma_px)
-
-            x_hat, P, _y, nis = bearing_update_tangent(x_hat, P, u_meas, r_body, sigma_theta)
-            nis_hist.append(float(nis))
+        r_sc_true = xs_true[k, :3]
+        if camera_mode == "fixed":
+            R_cam = R_fixed
+        elif camera_mode == "truth_tracking":
+            R_cam = camera_dcm_from_boresight(r_body - r_sc_true,
+                                              camera_forward_axis="+z")
         else:
-            nis_hist.append(float("nan"))
+            R_cam = camera_dcm_from_boresight(r_body - x_hat[:3],
+                                              camera_forward_axis="+z")
+
+        meas = simulate_pixel_measurement(
+            r_sc=r_sc_true, r_body=r_body, intrinsics=intr,
+            R_cam_from_frame=R_cam, sigma_px=float(sigma_px),
+            rng=rng, t=float(t_meas[k]),
+            dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
+        )
+
+        if meas.valid and np.isfinite(meas.u_px):
+            u_g, sig_k = pixel_detection_to_bearing(
+                meas.u_px, meas.v_px, float(sigma_px), intr, R_cam.T
+            )
+            if np.all(np.isfinite(u_g)):
+                upd = bearing_update_tangent(
+                    x_hat, P, u_g, r_body, float(sig_k)
+                )
+                if upd.accepted:
+                    x_hat, P = upd.x_upd, upd.P_upd
+                nis_list.append(float(upd.nis))
+                valid_arr[k] = True
+            else:
+                nis_list.append(float("nan"))
+        else:
+            nis_list.append(float("nan"))
 
         x_hat_hist.append(x_hat.copy())
-        P_hist.append(P.copy())
+        pos_err_list.append(_norm(x_hat[:3] - xs_true[k, :3]))
+        P_diag_list.append(np.diag(P).copy())
 
-        x_true_k = xs_true[k]
-        pos_err_hist.append(_norm(x_hat[:3] - x_true_k[:3]))
+    x_hat_arr   = np.asarray(x_hat_hist)
+    nis_arr     = np.asarray(nis_list)
+    pos_err_arr = np.asarray(pos_err_list)
+    P_diag_arr  = np.asarray(P_diag_list)
 
-    x_hat_hist = np.asarray(x_hat_hist)
-    P_hist = np.asarray(P_hist)
-    nis_hist = np.asarray(nis_hist)
-    pos_err_hist = np.asarray(pos_err_hist)
-
-    x_true_tc = xs_true[k_tc]
-    x_hat_tc = x_hat.copy()
-    P_tc = P.copy()
-
-    pos_err_tc = _norm(x_hat_tc[:3] - x_true_tc[:3])
+    x_true_tc    = xs_true[k_tc]
+    x_hat_tc     = x_hat.copy()
+    P_tc         = P.copy()
+    pos_err_tc   = _norm(x_hat_tc[:3] - x_true_tc[:3])
     tracePpos_tc = float(np.trace(P_tc[:3, :3]))
-    valid_rate = float(np.mean(valid_arr[: k_tc + 1]))
-    nis_finite = nis_hist[np.isfinite(nis_hist)]
-    nis_mean = float(np.mean(nis_finite)) if nis_finite.size else float("nan")
+    valid_rate   = float(np.mean(valid_arr[: k_tc + 1]))
+    nis_finite   = nis_arr[np.isfinite(nis_arr)]
+    nis_mean     = float(np.mean(nis_finite)) if nis_finite.size else float("nan")
 
-    dv_perf, info_perf = solve_single_impulse_position_target(
-        mu=mu, x0=x_true_tc, t0=tc_eff, tc=tc_eff, tf=tf, r_target=r_target
+    result_perf = solve_single_impulse_position_target(
+        propagate=propagate, mu=float(mu), x0=x_true_tc,
+        t0=tc_eff, tc=tc_eff, tf=float(tf), r_target=r_target,
     )
-    dv_ekf, info_ekf = solve_single_impulse_position_target(
-        mu=mu, x0=x_hat_tc, t0=tc_eff, tc=tc_eff, tf=tf, r_target=r_target
+    result_ekf = solve_single_impulse_position_target(
+        propagate=propagate, mu=float(mu), x0=x_hat_tc,
+        t0=tc_eff, tc=tc_eff, tf=float(tf), r_target=r_target,
     )
 
-    dv_perf = np.asarray(dv_perf, dtype=float)
-    dv_ekf = np.asarray(dv_ekf, dtype=float)
+    dv_perf = np.asarray(result_perf.dv, dtype=float)
+    dv_ekf  = np.asarray(result_ekf.dv,  dtype=float)
+
+    t_post   = np.linspace(tc_eff, float(tf), 2001)
+    res_unc  = propagate(model.eom, (tc_eff, float(tf)), x_true_tc,
+                         t_eval=t_post, rtol=1e-11, atol=1e-13)
+    miss_unc = _norm(res_unc.x[-1, :3] - r_target)
+
+    x_perf0 = x_true_tc.copy(); x_perf0[3:6] += dv_perf
+    res_perf = propagate(model.eom, (tc_eff, float(tf)), x_perf0,
+                         t_eval=t_post, rtol=1e-11, atol=1e-13)
+    miss_perf = _norm(res_perf.x[-1, :3] - r_target)
+
+    x_ekf0 = x_true_tc.copy(); x_ekf0[3:6] += dv_ekf
+    res_ekf = propagate(model.eom, (tc_eff, float(tf)), x_ekf0,
+                        t_eval=t_post, rtol=1e-11, atol=1e-13)
+    miss_ekf = _norm(res_ekf.x[-1, :3] - r_target)
 
     dv_perfect_mag = _norm(dv_perf)
-    dv_ekf_mag = _norm(dv_ekf)
-    dv_delta_mag = _norm(dv_ekf - dv_perf)
-
-    # uncorrected truth
-    t_dense2 = np.linspace(tc_eff, tf, 2001)
-    xs_unc = propagate(model, x_true_tc, t_dense2)
-    miss_unc = _norm(xs_unc[-1, :3] - r_target)
-
-    # perfect burn truth
-    x_perf0 = x_true_tc.copy()
-    x_perf0[3:6] += dv_perf
-    xs_perf = propagate(model, x_perf0, t_dense2)
-    miss_perf = _norm(xs_perf[-1, :3] - r_target)
-
-    # EKF burn truth
-    x_ekf0 = x_true_tc.copy()
-    x_ekf0[3:6] += dv_ekf
-    xs_ekf = propagate(model, x_ekf0, t_dense2)
-    miss_ekf = _norm(xs_ekf[-1, :3] - r_target)
+    dv_ekf_mag     = _norm(dv_ekf)
+    dv_delta_mag   = _norm(dv_ekf - dv_perf)
 
     return {
-        "tc": tc_eff,
-        "sigma_px": float(sigma_px),
+        "tc":           tc_eff,
+        "sigma_px":     float(sigma_px),
         "dropout_prob": float(dropout_prob),
-        "fixed_camera_pointing": bool(fixed_camera_pointing),
-        "dv_perfect_mag": dv_perfect_mag,
-        "dv_ekf_mag": dv_ekf_mag,
-        "dv_delta_mag": dv_delta_mag,
+        "camera_mode":  camera_mode,
+        "dv_perfect_mag":   dv_perfect_mag,
+        "dv_ekf_mag":       dv_ekf_mag,
+        "dv_delta_mag":     dv_delta_mag,
+        "dv_inflation":     dv_ekf_mag - dv_perfect_mag,
+        "dv_inflation_pct": (
+            float("nan") if dv_perfect_mag == 0.0
+            else dv_ekf_mag / dv_perfect_mag - 1.0
+        ),
         "miss_uncorrected": miss_unc,
-        "miss_perfect": miss_perf,
-        "miss_ekf": miss_ekf,
-        "pos_err_tc": pos_err_tc,
-        "tracePpos_tc": tracePpos_tc,
-        "valid_rate": valid_rate,
-        "nis_mean": nis_mean,
+        "miss_perfect":     miss_perf,
+        "miss_ekf":         miss_ekf,
+        "pos_err_tc":       pos_err_tc,
+        "tracePpos_tc":     tracePpos_tc,
+        "valid_rate":       valid_rate,
+        "nis_mean":         nis_mean,
         "debug": {
-            "t_meas": t_meas,
-            "k_tc": k_tc,
-            "xs_nom": xs_nom,
-            "xs_true": xs_true,
-            "x_hat_hist": x_hat_hist,
-            "pos_err_hist": pos_err_hist,
-            "nis_hist": nis_hist,
-            "xs_unc_tf": xs_unc,
-            "xs_perf_tf": xs_perf,
-            "xs_ekf_tf": xs_ekf,
-            "dv_perf": dv_perf,
-            "dv_ekf": dv_ekf,
+            "t_meas":       t_meas,
+            "k_tc":         k_tc,
+            "xs_nom":       res_nom.x,
+            "xs_true":      xs_true,
+            "x_hat_hist":   x_hat_arr,
+            "pos_err_hist": pos_err_arr,
+            "P_diag_hist":  P_diag_arr,
+            "nis_hist":     nis_arr,
+            "xs_unc_tf":    res_unc.x,
+            "xs_perf_tf":   res_perf.x,
+            "xs_ekf_tf":    res_ekf.x,
+            "dv_perf":      dv_perf,
+            "dv_ekf":       dv_ekf,
+            "r_target":     r_target,
         },
     }
 
 
 def main() -> None:
-    mu = 0.0121505856
-    t0 = 0.0
-    tf = 6.0
-    tc = 2.0
-    dt_meas = 0.02
-    sigma_px = 1.5
-    dropout_prob = 0.0
-    seed = 7
-
-    dx0 = np.array([1e-4, -1e-4, 0.0, 0.0, 0.0, 0.0], dtype=float)
-    est_err = np.array([1e-4, 1e-4, 0.0, 0.0, 0.0, 0.0], dtype=float)
-
-    out = run_case(mu, t0, tf, tc, dt_meas, sigma_px, dropout_prob, seed, dx0, est_err)
-
-    dbg = out["debug"]
+    _apply_dark_theme()
     plots_dir = Path("results/plots")
     _ensure_dir(plots_dir)
 
-    # Trajectory plot
-    _plot_traj(
-        dbg["xs_nom"],
-        dbg["xs_true"],
-        dbg["xs_perf_tf"],
-        dbg["xs_ekf_tf"],
-        plots_dir / "06_midcourse_traj.png",
-    )
-    # Position error vs time (to tc)
-    t_meas = dbg["t_meas"]
-    k_tc = dbg["k_tc"]
-    _plot_pos_err(t_meas[1 : k_tc + 1], dbg["pos_err_hist"], plots_dir / "06_ekf_pos_error.png")
-    # NIS vs time (to tc)
-    _plot_nis(t_meas[1 : k_tc + 1], dbg["nis_hist"], plots_dir / "06_ekf_nis.png")
-    # dv bar chart
-    _plot_dv_bar(dbg["dv_perf"], dbg["dv_ekf"], plots_dir / "06_dv_compare.png")
+    mu, t0, tf, tc = 0.0121505856, 0.0, 6.0, 2.0
+    dt_meas, sigma_px, dropout_prob, seed = 0.02, 1.5, 0.0, 7
+    dx0     = np.array([1e-4, -1e-4, 0.0, 0.0, 0.0, 0.0], dtype=float)
+    est_err = np.array([1e-4,  1e-4, 0.0, 0.0, 0.0, 0.0], dtype=float)
 
-    print("06A complete.")
-    print(f"tc used={out['tc']:.6f}")
-    print(f"|dv| perfect = {out['dv_perfect_mag']:.6e}")
-    print(f"|dv| ekf     = {out['dv_ekf_mag']:.6e}")
-    print(f"||dv_ekf - dv_perfect|| = {out['dv_delta_mag']:.6e}")
-    print("Wrote plots:")
-    print(f"  {plots_dir / '06_midcourse_traj.png'}")
-    print(f"  {plots_dir / '06_ekf_pos_error.png'}")
-    print(f"  {plots_dir / '06_ekf_nis.png'}")
+    print("Running 06 midcourse EKF correction ...")
+    out = run_case(mu, t0, tf, tc, dt_meas, sigma_px, dropout_prob, seed,
+                   dx0, est_err, camera_mode="estimate_tracking")
+    dbg = out["debug"]
+
+    t_meas  = dbg["t_meas"]
+    k_tc    = dbg["k_tc"]
+    t_ekf   = t_meas[1: k_tc + 1]
+    t_nom   = np.linspace(t0, tf, len(dbg["xs_nom"]))
+    t_post  = np.linspace(float(t_meas[k_tc]), tf, len(dbg["xs_unc_tf"]))
+    xs_nom  = dbg["xs_nom"]
+    xs_true = dbg["xs_true"]
+    x_hat   = dbg["x_hat_hist"]
+    pos_err = dbg["pos_err_hist"]
+    P_diag  = dbg["P_diag_hist"]
+    nis     = dbg["nis_hist"]
+    xs_unc  = dbg["xs_unc_tf"]
+    xs_perf = dbg["xs_perf_tf"]
+    xs_ekf  = dbg["xs_ekf_tf"]
+    r_tgt   = dbg["r_target"]
+    sig_pos = 3.0 * np.sqrt(np.abs(P_diag[:, 0]))
+
+    print(f"  camera_mode   = {out['camera_mode']}")
+    print(f"  |dv| perfect  = {out['dv_perfect_mag']:.4e} ND")
+    print(f"  |dv| EKF      = {out['dv_ekf_mag']:.4e} ND")
+    print(f"  miss_ekf      = {out['miss_ekf']:.4e} ND")
+    print(f"  NIS mean      = {out['nis_mean']:.3f}")
+    print(f"  valid_rate    = {out['valid_rate']:.3f}")
+
+    def _ax_style(ax: plt.Axes) -> None:
+        ax.set_facecolor(_PANEL)
+        for sp in ax.spines.values():
+            sp.set_edgecolor(_BORDER)
+        ax.grid(True)
+
+    fig = plt.figure(figsize=(14, 9))
+    gs  = gridspec.GridSpec(2, 2, figure=fig,
+                            left=0.07, right=0.97, top=0.93, bottom=0.09,
+                            wspace=0.28, hspace=0.38)
+
+    ax = fig.add_subplot(gs[0, 0])
+    _ax_style(ax)
+    model_p = CR3BP(mu=mu)
+    p1, p2 = model_p.primary1, model_p.primary2
+    ax.scatter([p1[0]], [p1[1]], s=90, c=_EARTH_C, zorder=5, label="Earth")
+    ax.scatter([p2[0]], [p2[1]], s=60, c=_MOON_C,  zorder=5, label="Moon")
+    ax.plot(xs_nom[:, 0],  xs_nom[:, 1],  color=_CYAN,   lw=1.4, alpha=0.7, label="nominal")
+    ax.plot(xs_true[:, 0], xs_true[:, 1], color=_AMBER,  lw=1.4, ls="--",   label="truth")
+    ax.plot(xs_unc[:, 0],  xs_unc[:, 1],  color=_AMBER,  lw=1.0, ls=":",    alpha=0.55)
+    ax.plot(xs_perf[:, 0], xs_perf[:, 1], color=_GREEN,  lw=1.6, label="perfect Δv")
+    ax.plot(xs_ekf[:, 0],  xs_ekf[:, 1],  color=_VIOLET, lw=1.6, ls=(0,(5,3)), label="EKF Δv")
+    ax.scatter([r_tgt[0]],            [r_tgt[1]],            s=90, marker="*", c=_AMBER, zorder=6, label="target")
+    ax.scatter([xs_true[k_tc, 0]],    [xs_true[k_tc, 1]],    s=70, c=_RED,    zorder=6, label="tc")
+    ax.set_title(f"XY Trajectory  [{out['camera_mode']}]", color=_TEXT)
+    ax.set_xlabel("x  [ND]", color=_TEXT)
+    ax.set_ylabel("y  [ND]", color=_TEXT)
+    ax.legend(fontsize=8)
+
+    ax = fig.add_subplot(gs[0, 1])
+    _ax_style(ax)
+    ax.fill_between(t_ekf, 0, sig_pos, color=_VIOLET, alpha=0.15, label="3σ (x)")
+    ax.semilogy(t_ekf, pos_err + 1e-12, color=_CYAN,  lw=1.8, label="‖r̂ − r‖")
+    ax.semilogy(t_ekf,
+                np.linalg.norm(x_hat[:, 3:6] - xs_true[1: k_tc + 1, 3:6], axis=1) + 1e-12,
+                color=_AMBER, lw=1.5, ls="--", label="‖v̂ − v‖", alpha=0.85)
+    ax.axvline(tc, color=_RED, lw=0.9, ls="--", alpha=0.6)
+    ax.set_title("EKF State Errors (to tc)", color=_TEXT)
+    ax.set_xlabel("t  [ND]", color=_TEXT)
+    ax.set_ylabel("Error  [ND]", color=_TEXT)
+    ax.legend(fontsize=9)
+
+    ax = fig.add_subplot(gs[1, 0])
+    _ax_style(ax)
+    nis_lo = chi2.ppf(0.025, df=2)
+    nis_hi = chi2.ppf(0.975, df=2)
+    ax.fill_between(t_ekf, nis_lo, nis_hi, color=_GREEN, alpha=0.10,
+                    label=f"95% χ²(2): [{nis_lo:.2f}, {nis_hi:.2f}]")
+    ax.axhline(2.0, color=_GREEN, lw=0.8, ls="--", alpha=0.5)
+    nis_ok = np.isfinite(nis)
+    in_b   = nis_ok & (nis >= nis_lo) & (nis <= nis_hi)
+    out_b  = nis_ok & ~in_b
+    ax.scatter(t_ekf[in_b],  nis[in_b],  s=12, c=_GREEN, zorder=4)
+    ax.scatter(t_ekf[out_b], nis[out_b], s=12, c=_RED,   zorder=4)
+    ax.set_ylim(0, 16)
+    ax.set_title(
+        f"NIS  (mean = {out['nis_mean']:.2f},  valid = {out['valid_rate']:.2f})",
+        color=_TEXT,
+    )
+    ax.set_xlabel("t  [ND]", color=_TEXT)
+    ax.set_ylabel("NIS", color=_TEXT)
+    ax.legend(fontsize=9)
+
+    ax = fig.add_subplot(gs[1, 1])
+    _ax_style(ax)
+    miss_labels = ["uncorrected", "perfect Δv", "EKF Δv"]
+    miss_vals   = [out["miss_uncorrected"], out["miss_perfect"], out["miss_ekf"]]
+    miss_cols   = [_AMBER, _GREEN, _VIOLET]
+    bars = ax.bar(miss_labels, miss_vals, color=miss_cols, edgecolor=_BORDER, lw=0.8)
+    for bar, val in zip(bars, miss_vals):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                val + max(miss_vals) * 0.02,
+                f"{val:.2e}", ha="center", va="bottom", color=_TEXT, fontsize=9)
+    ax.set_title("Terminal Miss Distance  ‖r(tf) − r_target‖", color=_TEXT)
+    ax.set_ylabel("Miss distance  [ND]", color=_TEXT)
+    ax.grid(True, axis="y")
+
+    fig.suptitle(
+        f"EKF Midcourse Correction — Bearing-Only Nav near L1  [{out['camera_mode']}]",
+        color=_TEXT, fontsize=13, y=0.98,
+    )
+    fig.patch.set_facecolor(_BG)
+    fig.savefig(plots_dir / "06_midcourse_report.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    fig.patch.set_facecolor(_BG)
+    ax.set_facecolor(_PANEL)
+    for sp in ax.spines.values():
+        sp.set_edgecolor(_BORDER)
+    labels = ["|dv| perfect", "|dv| EKF", "‖Δdv‖"]
+    vals   = [out["dv_perfect_mag"], out["dv_ekf_mag"], out["dv_delta_mag"]]
+    cols   = [_GREEN, _VIOLET, _RED]
+    bars   = ax.bar(labels, vals, color=cols, edgecolor=_BORDER, lw=0.8, width=0.55)
+    for bar, val in zip(bars, vals):
+        ax.text(bar.get_x() + bar.get_width() / 2, val + max(vals) * 0.02,
+                f"{val:.3e}", ha="center", va="bottom", color=_TEXT, fontsize=10)
+    ax.set_title("Burn Magnitude Comparison", color=_TEXT, fontsize=12)
+    ax.set_ylabel("Δv  [ND]", color=_TEXT)
+    ax.grid(True, axis="y")
+    infl = out["dv_inflation_pct"]
+    if np.isfinite(infl):
+        ax.text(0.98, 0.97, f"Inflation: {infl*100:+.2f}%",
+                transform=ax.transAxes, ha="right", va="top",
+                color=_ORANGE, fontsize=11,
+                bbox=dict(facecolor=_PANEL, edgecolor=_BORDER, pad=5))
+    fig.savefig(plots_dir / "06_dv_compare.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    print("Wrote:")
+    print(f"  {plots_dir / '06_midcourse_report.png'}")
     print(f"  {plots_dir / '06_dv_compare.png'}")
 
 

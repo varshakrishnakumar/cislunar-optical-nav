@@ -1,13 +1,3 @@
-# scripts/02_targeting_demo.py
-"""
-Deterministic single-impulse targeting in Earth-Moon CR3BP using STM.
-
-Run (recommended wrapper):
-  ./run.sh scripts/02_targeting_demo.py
-
-Or (if PYTHONPATH set):
-  python scripts/02_targeting_demo.py
-"""
 
 from __future__ import annotations
 
@@ -37,7 +27,7 @@ def unpack_state_and_stm(z: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 def propagate_cr3bp(mu: float, t0: float, tf: float, x0: np.ndarray, *, t_eval=None, dense=False):
     return propagate(
-        lambda t, x: CR3BP(mu=mu).eom(t, x),  # only used for pure-state runs
+        lambda t, x: CR3BP(mu=mu).eom(t, x),
         (t0, tf),
         x0,
         t_eval=t_eval,
@@ -72,14 +62,9 @@ def solve_single_impulse_position_target(
     max_iter: int = 10,
     tol: float = 1e-10,
 ) -> tuple[np.ndarray, dict]:
-    """
-    Solve for dv at tc so that r(tf) matches r_target (3 constraints, 3 unknowns).
-    Uses STM: dr(tf) ≈ Phi_rv * dv.
-    """
     x0 = np.asarray(x0, dtype=float).reshape(6,)
     r_target = np.asarray(r_target, dtype=float).reshape(3,)
 
-    # Propagate to tc (use STM form for convenience)
     z0 = pack_state_and_stm(x0, np.eye(6))
     res_tc = propagate_cr3bp_with_stm(mu, t0, tc, z0, dense=False)
     if not res_tc.success:
@@ -93,7 +78,6 @@ def solve_single_impulse_position_target(
         x_burn = x_tc.copy()
         x_burn[3:6] += dv
 
-        # Propagate tc->tf with STM initialized to identity
         z_tc = pack_state_and_stm(x_burn, np.eye(6))
         res_tf = propagate_cr3bp_with_stm(mu, tc, tf, z_tc, dense=False)
         if not res_tf.success:
@@ -110,7 +94,6 @@ def solve_single_impulse_position_target(
 
         Phi_rv = phi[0:3, 3:6]
 
-        # Newton step: dv <- dv - Phi_rv^{-1} err
         try:
             delta = np.linalg.solve(Phi_rv, err)
         except np.linalg.LinAlgError:
@@ -125,28 +108,23 @@ def main() -> None:
     mu = 0.0121505856
     model = CR3BP(mu=mu)
 
-    # --- Time settings (nondimensional)
     t0 = 0.0
     tf = 6.0
     tc = 2.0
 
-    # --- Nominal initial condition (reuse your near-L1 demo)
     L = model.lagrange_points()
     L1 = L["L1"]
     x0_nom = np.array([L1[0] - 1e-3, 0.0, 0.0, 0.0, 0.05, 0.0], dtype=float)
 
-    # Nominal terminal position is our target
     res_nom = propagate(model.eom, (t0, tf), x0_nom, dense_output=True, rtol=1e-11, atol=1e-13, method="DOP853")
     if not res_nom.success or res_nom.sol is None:
         raise RuntimeError(f"Nominal propagation failed: {res_nom.message}")
     x_tf_nom = res_nom.sol(tf).reshape(6,)
     r_target = x_tf_nom[:3]
 
-    # --- Inject an initial state error (position + velocity)
     dx0 = np.array([2e-4, -1e-4, 0.0, 0.0, 2e-3, 0.0], dtype=float)
     x0_err = x0_nom + dx0
 
-    # --- Solve for midcourse dv
     dv, info = solve_single_impulse_position_target(
         mu=mu, x0=x0_err, t0=t0, tc=tc, tf=tf, r_target=r_target, max_iter=10, tol=1e-10
     )
@@ -158,17 +136,13 @@ def main() -> None:
     print(f"  |dv| = {np.linalg.norm(dv):.6e}")
     print(f"  final position error = {info['final_err']}, norm={np.linalg.norm(info['final_err']):.3e}")
 
-    # --- Propagate trajectories for plotting
     t_plot = np.linspace(t0, tf, 4000)
 
-    # Nominal
     X_nom = res_nom.sol(t_plot).T
 
-    # Uncorrected off-nominal
     res_unc = propagate(model.eom, (t0, tf), x0_err, dense_output=True, rtol=1e-11, atol=1e-13, method="DOP853")
     X_unc = res_unc.sol(t_plot).T
 
-    # Corrected: propagate to tc, apply dv, propagate to tf
     res_to_tc = propagate(model.eom, (t0, tc), x0_err, dense_output=True, rtol=1e-11, atol=1e-13, method="DOP853")
     x_tc = res_to_tc.sol(tc).reshape(6,)
     x_tc[3:6] += dv
@@ -177,8 +151,7 @@ def main() -> None:
     X_cor_1 = res_to_tc.sol(t_plot[t_plot <= tc]).T
     X_cor_2 = res_cor.sol(t_plot[t_plot >= tc]).T
     X_cor = np.vstack([X_cor_1, X_cor_2])
-    
-    # --- Plot
+
     p1 = model.primary1
     p2 = model.primary2
 
@@ -201,8 +174,7 @@ def main() -> None:
     ax.legend(loc="best", fontsize=9)
     plt.tight_layout()
 
-    # Save the plot
-    plt.savefig('results/plots/02_targeting_demo_plot.png', dpi=300)  # Save with high resolution
+    plt.savefig('results/plots/02_targeting_demo_plot.png', dpi=300)
     plt.show()
 
 

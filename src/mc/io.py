@@ -9,12 +9,10 @@ from .types import TrialResult
 
 
 def save_results_csv(results: List[TrialResult], path: str | Path) -> Path:
-    """Save trial-level results to CSV."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if not results:
-        # Write header only
         path.write_text("")
         return path
 
@@ -31,7 +29,6 @@ def save_results_csv(results: List[TrialResult], path: str | Path) -> Path:
 
 
 def load_results_csv(path: str | Path) -> List[TrialResult]:
-    """Load trial-level results from CSV back into TrialResult dataclasses."""
     path = Path(path)
     if not path.exists():
         return []
@@ -40,7 +37,6 @@ def load_results_csv(path: str | Path) -> List[TrialResult]:
         reader = csv.DictReader(f)
         out: List[TrialResult] = []
         for row in reader:
-            # Convert fields back to appropriate types
             out.append(
                 TrialResult(
                     trial_id=int(row["trial_id"]),
@@ -48,7 +44,7 @@ def load_results_csv(path: str | Path) -> List[TrialResult]:
                     tc=float(row["tc"]),
                     sigma_px=float(row["sigma_px"]),
                     dropout_prob=float(row["dropout_prob"]),
-                    tracking_attitude=row["tracking_attitude"].lower() in ("1", "true", "yes"),
+                    camera_mode=str(row["camera_mode"]),
                     dv_perfect_mag=float(row["dv_perfect_mag"]),
                     dv_ekf_mag=float(row["dv_ekf_mag"]),
                     dv_delta_mag=float(row["dv_delta_mag"]),

@@ -1,86 +1,90 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Literal, Optional, Sequence
+
+
+CameraMode = Literal["fixed", "truth_tracking", "estimate_tracking"]
+
+_VALID_CAMERA_MODES = ("fixed", "truth_tracking", "estimate_tracking")
 
 
 @dataclass(frozen=True)
 class MonteCarloConfig:
-    """Configuration for a Monte Carlo study around the 06A single-run pipeline.
 
-    Notes:
-      - sigma_px and tc can be single values (for MC) or grids (for sweeps) handled by scripts.
-      - tracking_attitude=True means you use time-varying camera attitude (R_cam_from_frame varies).
-        tracking_attitude=False means fixed pointing; the 06A run_case should support this via
-        fixed_camera_pointing=True.
-    """
-
-    # dynamics / timeline
     mu: float
     t0: float
     tf: float
     tc: float
     dt_meas: float
 
-    # measurement model
     sigma_px: float
     dropout_prob: float = 0.0
-    tracking_attitude: bool = True  # False => fixed camera pointing (bonus case)
+    camera_mode: CameraMode = "estimate_tracking"
 
-    # trial control
     n_trials: int = 100
     base_seed: int = 7
 
-    # injection (truth) error distribution (1-sigma, in nondimensional units)
     sigma_r_inj: float = 1e-4
     sigma_v_inj: float = 1e-4
 
-    # filter initial estimation error distribution (1-sigma, in nondimensional units)
     sigma_r_est: float = 1e-4
     sigma_v_est: float = 1e-4
 
     planar_only: bool = False
+    study_name: str = "mc_study"
 
-    study_name: str = "mc06c"
-
-
-@dataclass(frozen=True)
-class TrialInput:
-    trial_id: int
-    seed: int
-    dx0: Sequence[float]          # 6-vector
-    est_err: Sequence[float]      # 6-vector
+    def __post_init__(self) -> None:
+        if not (0.0 < self.mu < 0.5):
+            raise ValueError(f"mu must be in (0, 0.5), got {self.mu}")
+        if self.tf <= self.t0:
+            raise ValueError(f"tf ({self.tf}) must be > t0 ({self.t0})")
+        if not (self.t0 <= self.tc <= self.tf):
+            raise ValueError(
+                f"tc ({self.tc}) must satisfy t0 ({self.t0}) <= tc <= tf ({self.tf})"
+            )
+        if self.dt_meas <= 0.0:
+            raise ValueError(f"dt_meas must be > 0, got {self.dt_meas}")
+        if self.sigma_px < 0.0:
+            raise ValueError(f"sigma_px must be >= 0, got {self.sigma_px}")
+        if not (0.0 <= self.dropout_prob <= 1.0):
+            raise ValueError(f"dropout_prob must be in [0, 1], got {self.dropout_prob}")
+        if self.camera_mode not in _VALID_CAMERA_MODES:
+            raise ValueError(
+                f"camera_mode must be one of {_VALID_CAMERA_MODES}, got {self.camera_mode!r}"
+            )
+        if self.n_trials <= 0:
+            raise ValueError(f"n_trials must be > 0, got {self.n_trials}")
+        for name in ("sigma_r_inj", "sigma_v_inj", "sigma_r_est", "sigma_v_est"):
+            if getattr(self, name) < 0.0:
+                raise ValueError(f"{name} must be >= 0, got {getattr(self, name)}")
 
 
 @dataclass(frozen=True)
 class TrialResult:
-    # identifiers
+
     trial_id: int
     seed: int
     tc: float
     sigma_px: float
     dropout_prob: float
-    tracking_attitude: bool
+    camera_mode: CameraMode
 
-    # burn comparison
     dv_perfect_mag: float
     dv_ekf_mag: float
     dv_delta_mag: float
     dv_inflation: float
     dv_inflation_pct: float
 
-    # terminal miss
     miss_uncorrected: float
     miss_perfect: float
     miss_ekf: float
 
-    # EKF stats at correction time
     pos_err_tc: float
     tracePpos_tc: float
     nis_mean: float
     valid_rate: float
 
-    # injection size
     dx0_norm_r: float
     dx0_norm_v: float
 

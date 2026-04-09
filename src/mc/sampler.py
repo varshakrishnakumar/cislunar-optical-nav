@@ -6,8 +6,6 @@ from typing import Tuple
 
 
 def make_trial_rng(base_seed: int, trial_id: int) -> Generator:
-    """Create a deterministic RNG per trial."""
-    # Simple reproducible mix; stable across python versions.
     seed = (int(base_seed) * 1000003 + int(trial_id) * 9176) % (2**32 - 1)
     return np.random.default_rng(seed)
 
@@ -18,7 +16,6 @@ def sample_injection_error(
     sigma_v: float,
     planar_only: bool = False,
 ) -> np.ndarray:
-    """Sample a 6D injection error dx0 = [dr, dv]."""
     dr = rng.normal(0.0, sigma_r, size=3)
     dv = rng.normal(0.0, sigma_v, size=3)
     if planar_only:
@@ -33,7 +30,6 @@ def sample_estimation_error(
     sigma_v: float,
     planar_only: bool = False,
 ) -> np.ndarray:
-    """Sample a 6D initial filter estimation error."""
     er = rng.normal(0.0, sigma_r, size=3)
     ev = rng.normal(0.0, sigma_v, size=3)
     if planar_only:

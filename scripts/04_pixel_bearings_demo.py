@@ -1,522 +1,428 @@
 from __future__ import annotations
 
-from pathlib import Path
-import subprocess
 import shutil
-import scipy.stats as stats
+import subprocess
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from matplotlib.lines import Line2D
+from scipy.stats import chi2
 
 from dynamics.cr3bp import CR3BP
 from dynamics.integrators import propagate
-
 from nav.ekf import ekf_propagate_cr3bp_stm
 from nav.measurements.bearing import bearing_update_tangent
 from nav.measurements.pixel_bearing import pixel_detection_to_bearing
-
 from cv.camera import Intrinsics
+from cv.pointing import camera_dcm_from_boresight
 from cv.sim_measurements import simulate_pixel_measurement
 
-def _set_tracking_bounds(ax, r_true, v_true, X_hat_hist, k,
-                         window=200, lead=0.10, pad=1.35, err_gain=8.0,
-                         view_min=1.0e-3, view_max=0.08, smooth_alpha=0.985,
-                         q=0.90, state=None):
 
-    i0 = max(0, k - window)
-    pts = np.vstack([r_true[i0:k+1], X_hat_hist[i0:k+1, :3]])
-
-    v = v_true[k]
-    speed = float(np.linalg.norm(v))
-    lead_vec = lead * v if speed > 1e-12 else 0.0
-    center_target = r_true[k] + lead_vec
-
-    d = np.linalg.norm(pts - center_target[None, :], axis=1)
-    rad = float(np.quantile(d, q))
-
-    err = float(np.linalg.norm(X_hat_hist[k, :3] - r_true[k]))
-    half_target = pad * rad + err_gain * err
-    half_target = float(np.clip(half_target, view_min, view_max))
-
-    if state is None:
-        state = {"center": center_target.copy(), "half": half_target}
-    else:
-        state["center"] = smooth_alpha * state["center"] + (1 - smooth_alpha) * center_target
-        state["half"]   = smooth_alpha * state["half"]   + (1 - smooth_alpha) * half_target
-
-    c = state["center"]
-    d_true = float(np.max(np.abs(r_true[k] - c)))
-    d_est  = float(np.max(np.abs(X_hat_hist[k, :3] - c)))
-    need_half = max(d_true, d_est) + 1.5 * view_min
-    state["half"] = float(np.clip(max(state["half"], need_half), view_min, view_max))
-
-    h = state["half"]
-    ax.set_xlim(c[0]-h, c[0]+h)
-    ax.set_ylim(c[1]-h, c[1]+h)
-    ax.set_zlim(c[2]-h, c[2]+h)
-    return state
-
-def _style_3d_space(ax):
-    ax.set_facecolor("black")
-    ax.grid(False)
-
-    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-        try:
-            axis.pane.set_facecolor((0, 0, 0, 1))
-            axis.pane.set_edgecolor((0, 0, 0, 0))
-        except Exception:
-            pass
-        try:
-            axis._axinfo["grid"]["color"] = (0, 0, 0, 0)
-        except Exception:
-            pass
-
-    ax.tick_params(colors="white")
-    ax.xaxis.label.set_color("white")
-    ax.yaxis.label.set_color("white")
-    ax.zaxis.label.set_color("white")
-    ax.title.set_color("white")
-
-    ax.set_axis_off()
-    
-def _blend_angle_deg(a, b, w):
-    d = (b - a + 180.0) % 360.0 - 180.0
-    return (a + w * d) % 360.0
-
-def _style_2d_space(fig):
-    """Dark theme for 2D plots."""
-    fig.patch.set_facecolor("black")
-    for ax in fig.axes:
-        ax.set_facecolor("black")
-        ax.tick_params(colors="white")
-        ax.xaxis.label.set_color("white")
-        ax.yaxis.label.set_color("white")
-        ax.title.set_color("white")
-        for spine in ax.spines.values():
-            spine.set_color((1, 1, 1, 0.35))
-        ax.grid(True, alpha=0.15)
+_BG     = "#080B14"
+_PANEL  = "#0E1220"
+_BORDER = "#1C2340"
+_TEXT   = "#DCE0EC"
+_DIM    = "#5A6080"
+_CYAN   = "#22D3EE"
+_AMBER  = "#F59E0B"
+_GREEN  = "#10B981"
+_RED    = "#F43F5E"
+_VIOLET = "#8B5CF6"
+_ORANGE = "#FB923C"
+_MOON_C = "#C8CDD8"
+_EARTH_C= "#3B82F6"
 
 
-def _legend_dark(ax):
-    leg = ax.get_legend()
-    if leg is None:
-        leg = ax.legend(loc="upper left", fontsize=9)
-
-    frame = leg.get_frame()
-    frame.set_facecolor((0, 0, 0, 0.25))   
-    frame.set_edgecolor((1, 1, 1, 0.18))  
-    frame.set_linewidth(0.8)
-    leg.borderpad = 0.35
-    leg.labelspacing = 0.35
-    leg.handlelength = 2.0
-    leg.handletextpad = 0.6
-
-    for t in leg.get_texts():
-        t.set_color((1, 1, 1, 0.92))
-
-
-def _make_starfield(rng: np.random.Generator, center: np.ndarray, radius: float, n: int = 2500):
-    """
-    Stars distributed on a sphere shell around the scene.
-    Returns positions (n,3), sizes (n,), colors_rgba (n,4).
-    """
-    dirs = rng.normal(size=(n, 3))
-    dirs /= (np.linalg.norm(dirs, axis=1, keepdims=True) + 1e-12)
-
-    rr = radius * (0.85 + 0.30 * rng.random(n))
-    stars = center + dirs * rr[:, None]
-
-    bright = rng.random(n) ** 3
-
-    alpha = 0.03 + 0.60 * bright
-    sizes = 0.8 + 7.5 * bright
-
-    types = rng.choice(3, size=n, p=[0.22, 0.60, 0.18])
-
-    cool    = np.array([0.82, 0.90, 1.00])
-    neutral = np.array([1.00, 1.00, 1.00])
-    warm    = np.array([1.00, 0.93, 0.82])
-
-    base_rgb = np.zeros((n, 3), dtype=float)
-    base_rgb[types == 0] = cool
-    base_rgb[types == 1] = neutral
-    base_rgb[types == 2] = warm
-
-    whiten = (bright ** 0.35)[:, None]  # 0..1
-    rgb = (1.0 - 0.35 * whiten) * base_rgb + (0.35 * whiten) * np.array([1.0, 1.0, 1.0])
-
-    colors = np.zeros((n, 4), dtype=float)
-    colors[:, :3] = np.clip(rgb, 0.0, 1.0)
-    colors[:, 3] = np.clip(alpha, 0.0, 1.0)
-
-    return stars, sizes, colors
+def _apply_dark_theme() -> None:
+    plt.rcParams.update({
+        "figure.facecolor":  _BG,
+        "axes.facecolor":    _PANEL,
+        "axes.edgecolor":    _BORDER,
+        "axes.labelcolor":   _TEXT,
+        "axes.titlecolor":   _TEXT,
+        "text.color":        _TEXT,
+        "xtick.color":       _TEXT,
+        "ytick.color":       _TEXT,
+        "grid.color":        _BORDER,
+        "grid.alpha":        1.0,
+        "grid.linestyle":    "--",
+        "lines.linewidth":   2.0,
+        "legend.facecolor":  _PANEL,
+        "legend.edgecolor":  _BORDER,
+        "legend.labelcolor": _TEXT,
+        "savefig.facecolor": _BG,
+        "savefig.edgecolor": _BG,
+        "font.size":         11,
+    })
 
 
-def _run_ffmpeg(frames_dir: Path, out_mp4: Path, fps: int = 30) -> None:
+def _run_ffmpeg(frames_dir: Path, out_mp4: Path, fps: int) -> None:
     cmd = [
         "ffmpeg", "-y",
-        "-framerate", str(fps),
+        "-framerate", str(int(fps)),
         "-i", str(frames_dir / "frame_%05d.png"),
+        "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
+        "-crf", "17",
         "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2",
         str(out_mp4),
     ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _render_split_frame(
+    *,
+    out_path: Path,
+    t: float,
+    r_true_xy: np.ndarray,
+    r_est_xy: np.ndarray,
+    r_moon: np.ndarray,
+    r_earth: np.ndarray,
+    u_px_now: float,
+    v_px_now: float,
+    valid_now: bool,
+    pos_err_hist: np.ndarray,
+    nis_hist: np.ndarray,
+    t_hist: np.ndarray,
+    cam_width: int,
+    cam_height: int,
+    intr: Intrinsics,
+    update_used: bool,
+) -> None:
+    dpi = 100
+    fig_w, fig_h = 1600 / dpi, 720 / dpi
+    fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=_BG)
+
+    gs = gridspec.GridSpec(
+        2, 2,
+        figure=fig,
+        left=0.05, right=0.97, top=0.94, bottom=0.09,
+        wspace=0.30, hspace=0.35,
+    )
+
+    ax_cam = fig.add_subplot(gs[:, 0])
+    ax_cam.set_facecolor("#050709")
+    ax_cam.set_xlim(0, cam_width)
+    ax_cam.set_ylim(cam_height, 0)
+
+    ax_cam.plot([0, cam_width, cam_width, 0, 0],
+                [0, 0, cam_height, cam_height, 0],
+                color=_BORDER, lw=1.0)
+    cx, cy = float(intr.cx), float(intr.cy)
+    ax_cam.plot([cx - 14, cx + 14], [cy, cy], color=_DIM, lw=0.8)
+    ax_cam.plot([cx, cx], [cy - 14, cy + 14], color=_DIM, lw=0.8)
+
+    if valid_now and np.isfinite(u_px_now) and np.isfinite(v_px_now):
+        dot_color = _GREEN if update_used else _AMBER
+        ax_cam.scatter([u_px_now], [v_px_now], s=60, color=dot_color,
+                       zorder=5, marker="o")
+        ax_cam.plot([u_px_now - 7, u_px_now + 7], [v_px_now, v_px_now],
+                    color=dot_color, lw=1.2, zorder=4)
+        ax_cam.plot([u_px_now, u_px_now], [v_px_now - 7, v_px_now + 7],
+                    color=dot_color, lw=1.2, zorder=4)
+
+    status = "ACCEPTED" if update_used else ("DETECTED" if valid_now else "NO DETECT")
+    status_color = _GREEN if update_used else (_AMBER if valid_now else _RED)
+    ax_cam.text(12, 18, f"t = {t:.3f} ND\n{status}",
+                color=status_color, fontsize=10, family="monospace",
+                va="top", ha="left",
+                bbox=dict(facecolor="#050709", edgecolor=_BORDER, pad=5, alpha=0.85))
+    ax_cam.text(12, cam_height - 12, "Camera Image Plane",
+                color=_DIM, fontsize=9, family="monospace", va="bottom")
+    ax_cam.set_xlabel("u [px]", color=_TEXT)
+    ax_cam.set_ylabel("v [px]", color=_TEXT)
+
+    ax_traj = fig.add_subplot(gs[0, 1])
+    ax_traj.set_facecolor(_PANEL)
+    ax_traj.scatter([r_earth[0]], [r_earth[1]], s=80, c=_EARTH_C, zorder=5, label="Earth")
+    ax_traj.scatter([r_moon[0]],  [r_moon[1]],  s=55, c=_MOON_C,  zorder=5, label="Moon")
+
+
+    ax_traj.plot(r_true_xy[:, 0], r_true_xy[:, 1],
+                 color=_CYAN, lw=1.6, alpha=0.9, label="truth")
+    ax_traj.scatter([r_true_xy[-1, 0]], [r_true_xy[-1, 1]],
+                    s=30, c=_CYAN, zorder=6)
+
+    if np.all(np.isfinite(r_est_xy[-1])):
+        ax_traj.plot(r_est_xy[:, 0], r_est_xy[:, 1],
+                     color=_AMBER, lw=1.6, ls=(0, (5, 3)), alpha=0.9, label="EKF est")
+        ax_traj.scatter([r_est_xy[-1, 0]], [r_est_xy[-1, 1]],
+                        s=30, c=_AMBER, marker="D", zorder=6)
+
+    ax_traj.set_title("CR3BP XY Orbit (near L1)", color=_TEXT, fontsize=10)
+    ax_traj.set_xlabel("x [ND]", color=_TEXT, fontsize=9)
+    ax_traj.set_ylabel("y [ND]", color=_TEXT, fontsize=9)
+    ax_traj.legend(loc="lower left", fontsize=8)
+    ax_traj.grid(True)
+
+    cx_r = float(r_true_xy[-1, 0])
+    cy_r = float(r_true_xy[-1, 1])
+    half = 0.04
+    ax_traj.set_xlim(cx_r - half * 2.5, cx_r + half * 2.5)
+    ax_traj.set_ylim(cy_r - half, cy_r + half)
+
+    for sp in ax_traj.spines.values():
+        sp.set_edgecolor(_BORDER)
+
+    ax_err = fig.add_subplot(gs[1, 1])
+    ax_err.set_facecolor(_PANEL)
+
+    ax_err.semilogy(t_hist, pos_err_hist + 1e-12, color=_CYAN, lw=1.5,
+                    label="‖pos err‖")
+
+    ax_nis = ax_err.twinx()
+    ax_nis.set_facecolor("none")
+    nis_valid = np.isfinite(nis_hist)
+    if nis_valid.any():
+        ax_nis.fill_between(t_hist,
+                            chi2.ppf(0.025, df=2), chi2.ppf(0.975, df=2),
+                            color=_GREEN, alpha=0.10)
+        ax_nis.scatter(t_hist[nis_valid], nis_hist[nis_valid], s=5,
+                       color=_GREEN, alpha=0.7, zorder=3)
+    ax_nis.set_ylabel("NIS", color=_GREEN, fontsize=9)
+    ax_nis.tick_params(axis="y", colors=_GREEN)
+    ax_nis.set_ylim(0, 20)
+
+    ax_err.set_title("Position Error & NIS", color=_TEXT, fontsize=10)
+    ax_err.set_xlabel("t [ND]", color=_TEXT, fontsize=9)
+    ax_err.set_ylabel("‖r̂ − r‖  [ND]", color=_CYAN, fontsize=9)
+    ax_err.tick_params(axis="y", colors=_CYAN)
+    ax_err.grid(True)
+    for sp in ax_err.spines.values():
+        sp.set_edgecolor(_BORDER)
+
+    fig.suptitle(
+        "Cislunar Optical Navigation — Pixel-Based Bearing EKF  |  Earth-Moon CR3BP",
+        color=_TEXT, fontsize=11, y=0.98
+    )
+    fig.savefig(out_path, dpi=dpi, facecolor=_BG)
+    plt.close(fig)
 
 
 def main() -> None:
-    plots_dir = Path("results/plots"); plots_dir.mkdir(parents=True, exist_ok=True)
+    _apply_dark_theme()
+
+    plots_dir  = Path("results/plots");  plots_dir.mkdir(parents=True, exist_ok=True)
     videos_dir = Path("results/videos"); videos_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir = videos_dir / "04_frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
 
     mu = 0.0121505856
     model = CR3BP(mu=mu)
 
-    t0, tf = 0.0, 6.0
-    dt_meas = 0.02
-    t_meas = np.arange(t0, tf + 1e-12, dt_meas)
+    L1x    = model.lagrange_points()["L1"][0]
+    x0_nom = np.array([L1x - 1e-3, 0.0, 0.0, 0.0, 0.05, 0.0], dtype=float)
 
-    L = model.lagrange_points()
-    L1 = L["L1"]
+    r_body  = np.asarray(model.primary2, dtype=float)
+    r_earth = np.asarray(model.primary1, dtype=float)
 
-    x_true0 = np.array([L1[0] - 1e-3, 0.0, 0.0, 0.0, 0.05, 0.0], dtype=float)
-
-    r_body = np.asarray(model.primary2, dtype=float).reshape(3)
-
-    width, height = 1280, 720
-    intr = Intrinsics(fx=800.0, fy=800.0, cx=width / 2, cy=height / 2, width=width, height=height)
-
-    R_cam_from_frame = np.eye(3)
-    R_frame_from_cam = np.eye(3)
-
+    t0, tf   = 0.0, 6.0
+    dt_meas  = 0.02
     sigma_px = 1.5
-    dropout_prob = 0.0
-    q_acc = 1e-12
+    q_acc    = 1e-14
+    seed     = 7
 
-    x_hat = x_true0.copy()
-    x_hat[:3] += np.array([2e-4, -1e-4, 0.0])
-    x_hat[3:6] += np.array([0.0, 2e-4, 0.0])
-    P = np.diag([1e-6] * 6).astype(float)
+    t_meas = np.arange(t0, tf + 1e-12, dt_meas)
+    N      = len(t_meas)
 
-    rng = np.random.default_rng(7)
+    intr = Intrinsics(fx=400., fy=400., cx=320., cy=240., width=640, height=480)
 
-    res_truth = propagate(model.eom, (t0, tf), x_true0, t_eval=t_meas)
+    x_true0      = x0_nom.copy()
+    x_true0[:3] += np.array([1e-4, -1e-4, 0.0])
+
+    res_truth = propagate(model.eom, (t0, tf), x_true0, t_eval=t_meas,
+                          rtol=1e-11, atol=1e-13)
     if not res_truth.success:
         raise RuntimeError(f"Truth propagation failed: {res_truth.message}")
-
     X_true = res_truth.x
-    r_true = X_true[:, :3]
-    v_true = X_true[:, 3:6]
-    N = len(t_meas)
 
-    u_px = np.full(N, np.nan)
-    v_px = np.full(N, np.nan)
-    valid = np.zeros(N, dtype=bool)
-    R_cam_from_frame_hist = np.zeros((N, 3, 3), dtype=float)
+    rng = np.random.default_rng(seed)
+
+    u_px_arr     = np.full(N, np.nan)
+    v_px_arr     = np.full(N, np.nan)
+    valid_arr    = np.zeros(N, dtype=bool)
+    R_cam_arr    = np.zeros((N, 3, 3), dtype=float)
 
     for k in range(N):
-        los = r_body - r_true[k]
-        los /= np.linalg.norm(los)
+        r_sc = X_true[k, :3]
+        boresight = r_body - r_sc
+        R_cam = camera_dcm_from_boresight(boresight, camera_forward_axis="+z")
+        R_cam_arr[k] = R_cam
 
-        z_cam = los
-        x_tmp = np.array([1,0,0])
-        if abs(np.dot(z_cam, x_tmp)) > 0.9:
-            x_tmp = np.array([0,1,0])
-
-        x_cam = np.cross(x_tmp, z_cam)
-        x_cam /= np.linalg.norm(x_cam)
-        y_cam = np.cross(z_cam, x_cam)
-
-        R_cam_from_frame = np.vstack([x_cam, y_cam, z_cam])
-        R_cam_from_frame_hist[k] = R_cam_from_frame
         meas = simulate_pixel_measurement(
-            r_sc=r_true[k],
-            r_body=r_body,
-            intrinsics=intr,
-            R_cam_from_frame=R_cam_from_frame,
-            sigma_px=sigma_px,
-            rng=rng,
-            t=float(t_meas[k]),
-            dropout_p=dropout_prob,
-            out_of_frame="drop",
-            behind="drop",
+            r_sc=r_sc, r_body=r_body,
+            intrinsics=intr, R_cam_from_frame=R_cam,
+            sigma_px=sigma_px, rng=rng, t=float(t_meas[k]),
+            dropout_p=0.0, out_of_frame="drop", behind="drop",
         )
-        if meas.valid:
-            u_px[k] = meas.u_px
-            v_px[k] = meas.v_px
-            valid[k] = True
+        if meas.valid and np.isfinite(meas.u_px):
+            u_px_arr[k] = meas.u_px
+            v_px_arr[k] = meas.v_px
+            valid_arr[k] = True
 
-    X_hat_hist = np.zeros((N, 6), dtype=float)
-    pos_err = np.full(N, np.nan)
-    vel_err = np.full(N, np.nan)
-    nis_hist = np.full(N, np.nan)
+    xhat         = x0_nom.copy()
+    xhat[:3]    += np.array([1e-4, 1e-4, 0.0])
+    P            = np.diag([1e-6] * 6).astype(float)
 
-    fps = 30
-    stride = 3  # save every Nth point
-    traj_frames = videos_dir / "04_pixel_bearings_frames_traj"; traj_frames.mkdir(parents=True, exist_ok=True)
-    err_frames  = videos_dir / "04_pixel_bearings_frames_err";  err_frames.mkdir(parents=True, exist_ok=True)
+    X_hat        = np.zeros((N, 6), dtype=float)
+    nis_arr      = np.full(N, np.nan, dtype=float)
+    pos_err_arr  = np.zeros(N, dtype=float)
+    upd_used_arr = np.zeros(N, dtype=bool)
+    P_diag_arr   = np.zeros((N, 6), dtype=float)
 
-    mins = r_true.min(axis=0)
-    maxs = r_true.max(axis=0)
-    center = 0.5 * (mins + maxs)
-    span = float(np.max(maxs - mins))
-    span = max(span, 1e-3)
+    X_hat[0]      = xhat
+    P_diag_arr[0] = np.diag(P)
+    pos_err_arr[0]= np.linalg.norm(xhat[:3] - X_true[0, :3])
 
-    zoom = 0.70
-    box = zoom * span
+    t_prev = t_meas[0]
+    for k in range(1, N):
+        tk = float(t_meas[k])
+        xhat, P, _ = ekf_propagate_cr3bp_stm(
+            mu=mu, x=xhat, P=P, t0=t_prev, t1=tk, q_acc=q_acc
+        )
 
-    # Starfield
-    stars_rng = np.random.default_rng(123)
-    stars, star_sizes, star_colors = _make_starfield(stars_rng, center=center, radius=6.0 * span, n=3500)
-
-    p1 = np.asarray(model.primary1, dtype=float).reshape(3)
-    p2 = np.asarray(model.primary2, dtype=float).reshape(3)
-
-    t_prev = float(t_meas[0])
-    frame_id = 0
-    
-    cam_state = None
-    yaw_state = None
-    roll_state = 0.0
-    
-
-    for k in range(N):
-        t_k = float(t_meas[k])
-
-        if k > 0:
-            x_hat, P, _Phi = ekf_propagate_cr3bp_stm(mu=mu, x=x_hat, P=P, t0=t_prev, t1=t_k, q_acc=q_acc)
-        t_prev = t_k
-
-        # if valid[k]:
-        #     u_meas_global, sigma_theta = pixel_detection_to_bearing(u_px[k], v_px[k], sigma_px, intr, R_frame_from_cam)
-        #     x_hat, P, y, nis = bearing_update_tangent(x_hat, P, u_meas_global, r_body, sigma_theta)
-        #     nis_hist[k] = float(nis) if np.isfinite(nis) else np.nan
-        if valid[k]:
-            # Use the SAME attitude that produced the pixel measurement
-            R_frame_from_cam = R_cam_from_frame_hist[k].T
-
-            u_meas_global, sigma_theta = pixel_detection_to_bearing(
-                u_px[k], v_px[k], sigma_px, intr, R_frame_from_cam
+        if valid_arr[k]:
+            R_frame_from_cam = R_cam_arr[k].T
+            u_meas, sigma_theta = pixel_detection_to_bearing(
+                u_px_arr[k], v_px_arr[k], sigma_px, intr, R_frame_from_cam
             )
-            x_hat, P, y, nis = bearing_update_tangent(x_hat, P, u_meas_global, r_body, sigma_theta)
-            nis_hist[k] = float(nis) if np.isfinite(nis) else np.nan
+            if np.all(np.isfinite(u_meas)):
+                upd = bearing_update_tangent(xhat, P, u_meas, r_body, float(sigma_theta))
+                nis_arr[k] = upd.nis
+                if upd.accepted:
+                    xhat, P = upd.x_upd, upd.P_upd
+                    upd_used_arr[k] = True
 
-        X_hat_hist[k] = x_hat
-        pos_err[k] = float(np.linalg.norm(x_hat[:3] - r_true[k]))
-        vel_err[k] = float(np.linalg.norm(x_hat[3:6] - v_true[k]))
+        X_hat[k]       = xhat
+        P_diag_arr[k]  = np.diag(P)
+        pos_err_arr[k] = np.linalg.norm(xhat[:3] - X_true[k, :3])
+        t_prev = tk
 
-        if (k % stride != 0) and (k != N - 1):
-            continue
-        fig = plt.figure(figsize=(11, 7), facecolor="black")
-        ax = fig.add_subplot(1, 1, 1, projection="3d")
+    vel_err_arr = np.linalg.norm(X_hat[:, 3:6] - X_true[:, 3:6], axis=1)
 
-        C_TRUE       = "#BFEFFF"
-        C_EST        = "#FFB454"
-        C_NOW_TRUE   = "#FF6E6E"
-        C_NOW_EST    = "#D7A6FF"
-        C_EARTH_CORE = "#2F7DFF"
-        C_EARTH_GLOW = "#7FB6FF"
-        C_MOON_CORE  = "#E6E7EA"
-        C_MOON_GLOW  = "#C9CED6"
-        C_CONN       = "#FFFFFF"
-        ax.set_box_aspect((1, 1, 1))  
-        ax.scatter(stars[:, 0], stars[:, 1], stars[:, 2],
-           s=star_sizes, c=star_colors, linewidths=0)
+    print(f"Valid measurements : {int(valid_arr.sum())} / {N}")
+    print(f"Updates used       : {int(upd_used_arr.sum())}")
+    print(f"Final pos error    : {pos_err_arr[-1]:.3e} ND")
+    print(f"Final vel error    : {vel_err_arr[-1]:.3e} ND")
+    print(f"Mean NIS (k≥1)     : {np.nanmean(nis_arr[1:]):.3f}")
 
-        ax.scatter([p1[0]], [p1[1]], [p1[2]], s=520, c=C_EARTH_GLOW, alpha=0.06, linewidths=0)
-        ax.scatter([p1[0]], [p1[1]], [p1[2]], s=90,  c=C_EARTH_CORE, alpha=0.95, linewidths=0, label="Earth")
+    fig, axs = plt.subplots(2, 2, figsize=(13, 8),
+                             gridspec_kw={"hspace": 0.35, "wspace": 0.30})
+    fig.patch.set_facecolor(_BG)
 
-        ax.scatter([p2[0]], [p2[1]], [p2[2]], s=420, c=C_MOON_GLOW, alpha=0.05, linewidths=0)
-        ax.scatter([p2[0]], [p2[1]], [p2[2]], s=70,  c=C_MOON_CORE, alpha=0.95, linewidths=0, label="Moon")
+    ax = axs[0, 0]
+    ax.set_facecolor(_PANEL)
+    ax.scatter([r_earth[0]], [r_earth[1]], s=90, c=_EARTH_C, zorder=5, label="Earth")
+    ax.scatter([r_body[0]],  [r_body[1]],  s=65, c=_MOON_C,  zorder=5, label="Moon")
+    ax.plot(X_true[:, 0], X_true[:, 1], color=_CYAN,  lw=1.8, label="Truth")
+    ax.plot(X_hat[:, 0],  X_hat[:, 1],  color=_AMBER, lw=1.8, ls=(0, (6, 3)),
+            label="EKF estimate", alpha=0.9)
+    upd_idx = np.where(upd_used_arr)[0]
+    ax.scatter(X_true[upd_idx, 0], X_true[upd_idx, 1],
+               s=12, c=_GREEN, zorder=6, label="Updates", alpha=0.7)
+    ax.set_title("CR3BP XY Trajectory", color=_TEXT)
+    ax.set_xlabel("x  [ND]", color=_TEXT)
+    ax.set_ylabel("y  [ND]", color=_TEXT)
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True)
+    for sp in ax.spines.values(): sp.set_edgecolor(_BORDER)
 
+    ax = axs[0, 1]
+    ax.set_facecolor(_PANEL)
+    sig_pos = 3.0 * np.sqrt(np.abs(P_diag_arr[:, 0]))
+    ax.fill_between(t_meas, 0, sig_pos, color=_VIOLET, alpha=0.15, label="3σ (x)")
+    ax.semilogy(t_meas, pos_err_arr + 1e-12, color=_CYAN,  lw=1.8, label="‖pos err‖")
+    ax.semilogy(t_meas, vel_err_arr + 1e-12, color=_AMBER, lw=1.5, ls="--",
+                label="‖vel err‖", alpha=0.85)
+    ax.set_title("State Estimation Errors", color=_TEXT)
+    ax.set_xlabel("t  [ND]", color=_TEXT)
+    ax.set_ylabel("Error norm  [ND]", color=_TEXT)
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(True)
+    for sp in ax.spines.values(): sp.set_edgecolor(_BORDER)
 
-        trail = 300
-        i_trail = max(0, k - trail)
-        
-        ax.plot(r_true[i_trail:k+1, 0], r_true[i_trail:k+1, 1], r_true[i_trail:k+1, 2],
-                linewidth=6.0, alpha=0.10, color=C_TRUE)
-        ax.plot(r_true[i_trail:k+1, 0], r_true[i_trail:k+1, 1], r_true[i_trail:k+1, 2],
-                linewidth=2.6, alpha=0.95, color=C_TRUE, label="True")
+    ax = axs[1, 0]
+    ax.set_facecolor(_PANEL)
+    nis_lo = chi2.ppf(0.025, df=2)
+    nis_hi = chi2.ppf(0.975, df=2)
+    ax.fill_between(t_meas, nis_lo, nis_hi, color=_GREEN, alpha=0.12,
+                    label=f"95% χ²(2): [{nis_lo:.2f}, {nis_hi:.2f}]")
+    ax.axhline(2.0, color=_GREEN, lw=0.9, ls="--", alpha=0.5)
+    nis_ok = np.isfinite(nis_arr)
+    in_band  = nis_ok & (nis_arr >= nis_lo) & (nis_arr <= nis_hi)
+    out_band = nis_ok & ~in_band
+    ax.scatter(t_meas[in_band],  nis_arr[in_band],  s=10, c=_GREEN, zorder=4)
+    ax.scatter(t_meas[out_band], nis_arr[out_band], s=10, c=_RED,   zorder=4)
+    ax.set_title(f"NIS  (mean={np.nanmean(nis_arr[1:]):.2f})", color=_TEXT)
+    ax.set_xlabel("t  [ND]", color=_TEXT)
+    ax.set_ylabel("NIS", color=_TEXT)
+    ax.legend(loc="upper right", fontsize=9)
+    ax.set_ylim(0, 18)
+    ax.grid(True)
+    for sp in ax.spines.values(): sp.set_edgecolor(_BORDER)
 
-        ax.plot(X_hat_hist[i_trail:k+1, 0], X_hat_hist[i_trail:k+1, 1], X_hat_hist[i_trail:k+1, 2],
-                linewidth=6.0, alpha=0.08, color=C_EST)
-        ax.plot(X_hat_hist[i_trail:k+1, 0], X_hat_hist[i_trail:k+1, 1], X_hat_hist[i_trail:k+1, 2],
-                linestyle=(0, (6, 4)), linewidth=2.6, alpha=0.95, color=C_EST, label="EKF est")
-        
-        err = float(np.linalg.norm(x_hat[:3] - r_true[k]))
-        conn_alpha = min(0.95, 0.25 + 40.0*err)
-        conn_lw = float(np.clip(1.5 + 30.0*err, 1.5, 6.0))
-        ax.plot([r_true[k,0], x_hat[0]],
-            [r_true[k,1], x_hat[1]],
-            [r_true[k,2], x_hat[2]],
-            linewidth=conn_lw, alpha=min(0.85, conn_alpha), color=C_CONN)
-        
-        ax.scatter([r_true[k,0]], [r_true[k,1]], [r_true[k,2]],
-           s=60, marker="o", c=C_NOW_TRUE,
-           edgecolors=(1,1,1,0.85), linewidths=1.1,
-           depthshade=False, label="True now")
+    ax = axs[1, 1]
+    ax.set_facecolor("#050709")
+    ax.set_xlim(0, intr.width)
+    ax.set_ylim(intr.height, 0)
+    ax.plot([0, intr.width, intr.width, 0, 0],
+            [0, 0, intr.height, intr.height, 0], color=_BORDER, lw=0.8)
+    ax.axvline(intr.cx, color=_DIM, lw=0.7, ls="--")
+    ax.axhline(intr.cy, color=_DIM, lw=0.7, ls="--")
+    v_mask = valid_arr
+    scatter = ax.scatter(u_px_arr[v_mask], v_px_arr[v_mask], c=t_meas[v_mask],
+                         cmap="plasma", s=8, vmin=t0, vmax=tf, zorder=3)
+    cb = fig.colorbar(scatter, ax=ax, fraction=0.04, pad=0.02)
+    cb.set_label("t [ND]", color=_TEXT)
+    cb.ax.yaxis.set_tick_params(color=_TEXT)
+    plt.setp(cb.ax.yaxis.get_ticklabels(), color=_TEXT)
+    ax.set_title("Moon Detection Track on Image Plane", color=_TEXT)
+    ax.set_xlabel("u  [px]", color=_TEXT)
+    ax.set_ylabel("v  [px]", color=_TEXT)
+    for sp in ax.spines.values(): sp.set_edgecolor(_BORDER)
 
-        ax.scatter([x_hat[0]], [x_hat[1]], [x_hat[2]],
-                s=60, marker="o", c=C_NOW_EST,
-                edgecolors=(1,1,1,0.85), linewidths=1.1,
-                depthshade=False, label="Est now")
-        
-        info = Line2D([], [], linestyle="none", marker=None, color="none",
-                    label=f"t={t_k:.2f}  Δt={dt_meas:.2f}  ||r̂−r||={err:.2e}")
+    fig.suptitle(
+        "Pixel-Based Optical Navigation — EKF Near L1  |  Earth-Moon CR3BP",
+        color=_TEXT, fontsize=13, y=1.01
+    )
+    fig.savefig(plots_dir / "04_pixel_bearings_report.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote: {plots_dir / '04_pixel_bearings_report.png'}")
 
-        handles, labels = ax.get_legend_handles_labels()
-        handles.append(info)
-        labels.append(info.get_label())
-        ax.legend(handles, labels, loc="upper left", fontsize=10)
-        _legend_dark(ax)
+    if shutil.which("ffmpeg") is None:
+        print("ffmpeg not found — skipping video generation.")
+        return
 
-
-        ax.set_title(f"Cislunar-style 3D View (t={t_k:.2f})")
-        
-        cam_state = _set_tracking_bounds(
-            ax, r_true, v_true, X_hat_hist, k,
-            window=trail,
-            lead=0.09,
-            pad=1.45,         
-            err_gain=9.0,    
-            view_max=0.08,
-            view_min=2.0e-3,
-            smooth_alpha=0.97,
-            q=0.90,
-            state=cam_state
+    print(f"Rendering {N} video frames ...")
+    stride = 2
+    frame_id = 0
+    for k in range(0, N, stride):
+        _render_split_frame(
+            out_path    = frames_dir / f"frame_{frame_id:05d}.png",
+            t           = float(t_meas[k]),
+            r_true_xy   = X_true[: k + 1, :2],
+            r_est_xy    = X_hat[: k + 1, :2],
+            r_moon      = r_body[:2],
+            r_earth     = r_earth[:2],
+            u_px_now    = float(u_px_arr[k]),
+            v_px_now    = float(v_px_arr[k]),
+            valid_now   = bool(valid_arr[k]),
+            pos_err_hist= pos_err_arr[: k + 1],
+            nis_hist    = nis_arr[: k + 1],
+            t_hist      = t_meas[: k + 1],
+            cam_width   = intr.width,
+            cam_height  = intr.height,
+            intr        = intr,
+            update_used = bool(upd_used_arr[k]),
         )
-        
-        t_video = t_k 
-
-        az_orbit = 35.0 + 4.0 * t_video
-        el = 18.0 + 2.0 * np.sin(0.7 * t_video)
-
-        vx, vy = float(v_true[k, 0]), float(v_true[k, 1])
-        vnorm = float(np.linalg.norm(v_true[k]))
-        if vnorm < 1e-6:
-            heading_cam = az_orbit  # fallback: keep orbit
-        else:
-            heading_deg = np.degrees(np.arctan2(vy, vx))
-            behind_deg = 182.0  
-            heading_cam = (heading_deg + behind_deg) % 360.0
-
-        follow = 0.45  
-        follow = float(np.clip(follow, 0.0, 1.0))
-
-        az_target = _blend_angle_deg(az_orbit, heading_cam, follow)
-
-        yaw_alpha = 0.98  # closer to 1 => smoother / slower following
-        if yaw_state is None:
-            yaw_state = az_target
-        else:
-            # move yaw_state a small step toward az_target
-            yaw_state = _blend_angle_deg(yaw_state, az_target, 1.0 - yaw_alpha)
-
-        az = yaw_state  
-        if 0 < k < N - 1:
-            a = (v_true[k + 1] - v_true[k - 1]) / (2.0 * dt_meas)
-        elif k == 0:
-            a = (v_true[1] - v_true[0]) / dt_meas
-        else:
-            a = (v_true[-1] - v_true[-2]) / dt_meas
-
-        v = v_true[k]
-        vnorm = float(np.linalg.norm(v))
-        eps = 1e-12
-
-        turn_rate = float(np.linalg.norm(np.cross(v, a))) / (vnorm * vnorm + eps)
-
-        bank_gain = 35.0      # tune: 20–60 (larger => more roll)
-        bank_max_deg = 10.0   # cap roll magnitude
-        roll_target = float(np.clip(bank_gain * turn_rate, -bank_max_deg, bank_max_deg))
-
-        # Smooth roll
-        roll_alpha = 0.96
-        roll_state = float(roll_alpha * roll_state + (1.0 - roll_alpha) * roll_target)
-
-        try:
-            ax.view_init(elev=el, azim=az, roll=roll_state)
-        except TypeError:
-            ax.view_init(elev=el, azim=az)
-
-        _style_3d_space(ax)
-
-
-        fig.tight_layout(pad=0.0)
-        fig.savefig(traj_frames / f"frame_{frame_id:05d}.png", dpi=170)
-        plt.close(fig)
-
-        fig2 = plt.figure(figsize=(11, 7), facecolor="black")
-        ax1 = fig2.add_subplot(3, 1, 1)
-        ax2 = fig2.add_subplot(3, 1, 2)
-        ax3 = fig2.add_subplot(3, 1, 3)
-
-        ax1.plot(t_meas[:k + 1], pos_err[:k + 1], linewidth=2.0, label="pos_err")
-        ax1.set_ylabel("||r̂-r||")
-        ax1.legend(loc="upper left")
-
-        ax2.plot(t_meas[:k + 1], vel_err[:k + 1], linewidth=2.0, label="vel_err")
-        ax2.set_ylabel("||v̂-v||")
-        ax2.legend(loc="upper left")
-
-        ax3.plot(t_meas[:k + 1], nis_hist[:k + 1], linewidth=2.0, label="NIS")
-        ax3.set_xlabel("t")
-        ax3.set_ylabel("NIS")
-        ax3.legend(loc="upper left")
-
-        fig2.suptitle(f"Filter Diagnostics (t={t_k:.2f})", color="white")
-
-        _style_2d_space(fig2)
-        fig2.tight_layout()
-        fig2.savefig(err_frames / f"frame_{frame_id:05d}.png", dpi=170)
-        plt.close(fig2)
-
         frame_id += 1
 
-    # --- Final static error summary plot ---
-    fig = plt.figure(figsize=(11, 7))
-
-    ax1 = fig.add_subplot(3, 1, 1)
-    ax2 = fig.add_subplot(3, 1, 2)
-    ax3 = fig.add_subplot(3, 1, 3)
-
-    ax1.plot(t_meas, pos_err, linewidth=2.0)
-    ax1.set_ylabel("||r̂ - r||")
-    ax1.grid(True)
-
-    ax2.plot(t_meas, vel_err, linewidth=2.0)
-    ax2.set_ylabel("||v̂ - v||")
-    ax2.grid(True)
-
-    ax3.plot(t_meas, nis_hist, linewidth=2.0)
-    ax3.set_xlabel("t")
-    ax3.set_ylabel("NIS")
-    ax3.grid(True)
-
-    fig.suptitle("04 Pixel Bearings — Filter Errors")
-    fig.tight_layout()
-
-    fig.savefig(plots_dir / "04_pixel_bearings_errors.png", dpi=200)
-
-    upper95 = stats.chi2.ppf(0.95, 2)
-    ax3.axhline(upper95, linestyle='--', linewidth=1.2, label="95%")
-    ax3.legend()
-    plt.close(fig)
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg not found on PATH; required to write mp4 automatically.")
-
-    traj_mp4 = videos_dir / "04_pixel_bearings_traj.mp4"
-    err_mp4 = videos_dir / "04_pixel_bearings_error.mp4"
-    fps_out = fps / stride
-    _run_ffmpeg(traj_frames, traj_mp4, fps=int(round(fps_out)))
-    _run_ffmpeg(err_frames,  err_mp4,  fps=int(round(fps_out)))
-
-
-    print("Wrote videos:")
-    print(" -", traj_mp4)
-    print(" -", err_mp4)
-    print("Frames kept in:")
-    print(" -", traj_frames)
-    print(" -", err_frames)
+    out_mp4 = videos_dir / "04_pixel_bearings.mp4"
+    video_fps = max(1, int(round((1.0 / (dt_meas * stride)) * 0.5)))
+    _run_ffmpeg(frames_dir, out_mp4, fps=video_fps)
+    print(f"Wrote: {out_mp4}")
 
 
 if __name__ == "__main__":

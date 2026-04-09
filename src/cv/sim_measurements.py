@@ -1,24 +1,3 @@
-"""
-cv/sim_measurements.py — simulate "CV-like" pixel detections
-
-Goal
-- Given truth geometry (spacecraft state, target position) and a camera model,
-  output what CV would produce:
-    - pixel measurement (u_px, v_px) and/or bounding box
-    - pixel noise model (sigma_px)
-- Pure simulation utilities; does NOT know EKF details.
-
-Includes "later upgrades" (implemented here):
-- bounding box simulation (sphere silhouette)
-- detection dropouts
-- centroid bias (toward limb)
-- distortion (simple Brown–Conrady radial+tangential model)
-
-Assumptions
-- Global frame positions: r_sc, r_body in same frame.
-- R_cam_from_frame maps global-frame vectors into camera frame.
-- Pinhole camera intrinsics (from cv.camera.Intrinsics); distortion is optional here.
-"""
 
 from __future__ import annotations
 
@@ -38,15 +17,6 @@ NoiseMode = Literal["none", "gaussian"]
 
 @dataclass(frozen=True, slots=True)
 class Distortion:
-    """
-    Brown–Conrady distortion model (OpenCV-style parameters).
-    All coefficients default to 0 (no distortion).
-
-    Radial: x_d = x * (1 + k1 r^2 + k2 r^4 + k3 r^6)
-    Tangential:
-      x_d += 2 p1 x y + p2 (r^2 + 2 x^2)
-      y_d += p1 (r^2 + 2 y^2) + 2 p2 x y
-    """
     k1: float = 0.0
     k2: float = 0.0
     p1: float = 0.0
@@ -59,13 +29,12 @@ class Distortion:
 
 @dataclass(frozen=True, slots=True)
 class PixelMeasurement:
-    """Single simulated CV detection."""
     t: float
     u_px: float
     v_px: float
     sigma_px: float
     valid: bool
-    bbox_xyxy: Optional[Tuple[float, float, float, float]] = None  # (xmin, ymin, xmax, ymax)
+    bbox_xyxy: Optional[Tuple[float, float, float, float]] = None
     meta: Optional[Dict[str, Any]] = None
 
 
@@ -97,7 +66,6 @@ def _unit(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 
 
 def _apply_distortion(x: np.ndarray, y: np.ndarray, d: Distortion) -> Tuple[np.ndarray, np.ndarray]:
-    # x,y are normalized coordinates
     r2 = x * x + y * y
     r4 = r2 * r2
     r6 = r4 * r2
@@ -134,9 +102,6 @@ def _los_to_pixel_with_distortion(
     distortion: Optional[Distortion],
     behind: BehindPolicy,
 ) -> Tuple[float, float, bool]:
-    """
-    Returns (u_px, v_px, valid). Uses distortion if provided.
-    """
     if u_cam.shape != (3,):
         raise ValueError("u_cam must be shape (3,)")
     if not np.all(np.isfinite(u_cam)):
@@ -147,7 +112,6 @@ def _los_to_pixel_with_distortion(
             return (np.nan, np.nan, False)
         return (np.nan, np.nan, False)
 
-    # Convert to normalized
     x_n = float(u_cam[0] / u_cam[2])
     y_n = float(u_cam[1] / u_cam[2])
 
@@ -181,7 +145,6 @@ def _handle_bounds(
     policy: OutOfFramePolicy,
 ) -> Tuple[float, float, bool]:
     if intr.width is None or intr.height is None:
-        # If not provided, we can't enforce bounds; treat as valid.
         return u, v, True
 
     inb = (0.0 <= u < float(intr.width)) and (0.0 <= v < float(intr.height))
@@ -216,22 +179,6 @@ def simulate_pixel_measurement(
     distortion: Optional[Distortion] = None,
     centroid_bias_px: float = 0.0,
 ) -> PixelMeasurement:
-    """
-    Simulate a point-detection (centroid) pixel measurement.
-
-    Steps:
-      1) rho = r_body - r_sc
-      2) u_global = rho / ||rho||
-      3) u_cam = R_cam_from_frame @ u_global
-      4) project to pixel (with optional distortion)
-      5) add noise
-      6) optional bounds handling
-      7) optional centroid bias (simple constant-magnitude push away from image center)
-
-    centroid_bias_px:
-      - if >0, shifts centroid radially outward from principal point by this many pixels
-        (a crude "toward limb" bias).
-    """
     rng = _rng_or_default(rng)
 
     if dropout_p > 0.0 and rng.random() < dropout_p:
@@ -298,25 +245,6 @@ def simulate_bbox_measurement(
     distortion: Optional[Distortion] = None,
     centroid_bias_fraction: float = 0.0,
 ) -> PixelMeasurement:
-    """
-    Simulate a bounding box detection for a spherical body silhouette.
-
-    Method:
-      - Compute line-of-sight unit vector to center u_cam and range r = ||rho||
-      - Apparent half-angle alpha = asin(R_body / r) (clamped)
-      - Build an orthonormal basis (e1,e2) perpendicular to u_cam
-      - Rim directions:
-          d1 = u_cam*cos(alpha) + e1*sin(alpha)
-          d2 = u_cam*cos(alpha) - e1*sin(alpha)
-          d3 = u_cam*cos(alpha) + e2*sin(alpha)
-          d4 = u_cam*cos(alpha) - e2*sin(alpha)
-      - Project center + rim directions to pixels, take min/max => bbox
-      - Add pixel noise to bbox edges (simple)
-      - Optional centroid bias "toward limb": moves centroid outward along radial direction
-        by centroid_bias_fraction * bbox_half_diag.
-
-    Returns PixelMeasurement with bbox_xyxy set and u_px/v_px as (noisy) bbox center.
-    """
     rng = _rng_or_default(rng)
 
     if body_radius <= 0 or not np.isfinite(body_radius):
@@ -337,20 +265,16 @@ def simulate_bbox_measurement(
     u_global = rho / r
     u_cam = rotate_vector(R, u_global)
 
-    # Behind camera?
     if u_cam[2] <= 0:
         return PixelMeasurement(t=t, u_px=np.nan, v_px=np.nan, sigma_px=float(sigma_px), valid=False, bbox_xyxy=None, meta={"reason": "behind_camera"})
 
-    # Apparent angular radius (clamp to avoid asin domain errors)
     s = float(np.clip(body_radius / r, 0.0, 1.0))
     alpha = float(np.arcsin(s))
 
-    # Build perpendicular basis to u_cam
     u_cam_u = _unit(u_cam)
     if not np.all(np.isfinite(u_cam_u)):
         return PixelMeasurement(t=t, u_px=np.nan, v_px=np.nan, sigma_px=float(sigma_px), valid=False, bbox_xyxy=None, meta={"reason": "bad_unit"})
 
-    # Choose a helper vector not colinear with u_cam_u
     helper = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     if abs(float(np.dot(helper, u_cam_u))) > 0.95:
         helper = np.array([0.0, 1.0, 0.0], dtype=np.float64)
@@ -369,7 +293,6 @@ def simulate_bbox_measurement(
         u_cam_u * ca - e2 * sa,
     ]
 
-    # Project center + rim
     u_c, v_c, okc = _los_to_pixel_with_distortion(u_cam_u, intrinsics, distortion=distortion, behind=behind)
     if not okc:
         return PixelMeasurement(t=t, u_px=np.nan, v_px=np.nan, sigma_px=float(sigma_px), valid=False, bbox_xyxy=None, meta={"reason": "center_projection_failed"})
@@ -391,7 +314,6 @@ def simulate_bbox_measurement(
     ymin = float(np.min(vs))
     ymax = float(np.max(vs))
 
-    # Add noise to edges (simple independent)
     if noise_mode != "none" and float(sigma_px) != 0.0:
         dxmin, dymin = _noise_uv(rng, float(sigma_px), mode=noise_mode)
         dxmax, dymax = _noise_uv(rng, float(sigma_px), mode=noise_mode)
@@ -399,6 +321,12 @@ def simulate_bbox_measurement(
         ymin += dymin
         xmax += dxmax
         ymax += dymax
+
+    if out_of_frame == "clamp" and intrinsics.width is not None and intrinsics.height is not None:
+        xmin = float(np.clip(xmin, 0.0, float(intrinsics.width) - 1.0))
+        xmax = float(np.clip(xmax, 0.0, float(intrinsics.width) - 1.0))
+        ymin = float(np.clip(ymin, 0.0, float(intrinsics.height) - 1.0))
+        ymax = float(np.clip(ymax, 0.0, float(intrinsics.height) - 1.0))
 
     u_meas = 0.5 * (xmin + xmax)
     v_meas = 0.5 * (ymin + ymax)
@@ -417,12 +345,6 @@ def simulate_bbox_measurement(
 
     if not valid and out_of_frame == "drop":
         return PixelMeasurement(t=t, u_px=np.nan, v_px=np.nan, sigma_px=float(sigma_px), valid=False, bbox_xyxy=None, meta={"reason": "out_of_frame"})
-
-    if out_of_frame == "clamp" and intrinsics.width is not None and intrinsics.height is not None:
-        xmin = float(np.clip(xmin, 0.0, float(intrinsics.width) - 1.0))
-        xmax = float(np.clip(xmax, 0.0, float(intrinsics.width) - 1.0))
-        ymin = float(np.clip(ymin, 0.0, float(intrinsics.height) - 1.0))
-        ymax = float(np.clip(ymax, 0.0, float(intrinsics.height) - 1.0))
 
     return PixelMeasurement(
         t=t,

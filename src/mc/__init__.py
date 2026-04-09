@@ -1,17 +1,12 @@
-"""Monte Carlo utilities for cislunar_optical_nav.
 
-Keep this package lightweight: types + sampling + runner + metrics + stats + IO.
-"""
-
-from .types import MonteCarloConfig, TrialInput, TrialResult
-from .sampler import make_trial_rng, sample_injection_error, sample_estimation_error
+from .io import load_results_csv, save_results_csv
 from .runner import run_monte_carlo
-from .stats import summarize_results, success_rate
-from .io import save_results_csv, load_results_csv
+from .sampler import make_trial_rng, sample_estimation_error, sample_injection_error
+from .stats import success_rate, summarize_results
+from .types import MonteCarloConfig, TrialResult
 
 __all__ = [
     "MonteCarloConfig",
-    "TrialInput",
     "TrialResult",
     "make_trial_rng",
     "sample_injection_error",
