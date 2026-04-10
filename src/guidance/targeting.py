@@ -5,7 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 from typing import Callable, Optional
 
-from dynamics.variational import cr3bp_eom_with_stm
+from dynamics.models import CR3BPDynamics, DynamicsModel
+from dynamics.state import pack_state_and_stm, unpack_state_and_stm
 
 @dataclass
 class TargetingResult:
@@ -15,23 +16,11 @@ class TargetingResult:
     final_pos_error: np.ndarray
     history: list[dict]
 
-def _pack_state_and_stm(x: np.ndarray, phi: Optional[np.ndarray] = None) -> np.ndarray:
-    x = np.asarray(x, dtype=float).reshape(6,)
-    if phi is None:
-        phi = np.eye(6, dtype=float)
-    phi = np.asarray(phi, dtype=float).reshape(6, 6)
-    return np.concatenate([x, phi.reshape(-1, order="F")])
-
-def _unpack(zf: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    zf = np.asarray(zf, dtype=float).reshape(-1,)
-    x = zf[:6].copy()
-    phi = zf[6:].reshape(6, 6, order="F").copy()
-    return x, phi
-
 def solve_single_impulse_position_target(
     *,
     propagate: Callable,
-    mu: float,
+    mu: Optional[float] = None,
+    dynamics: DynamicsModel | None = None,
     x0: np.ndarray,
     t0: float,
     tc: float,
@@ -41,14 +30,19 @@ def solve_single_impulse_position_target(
     max_iter: int = 10,
     tol: float = 1e-10,
 ) -> TargetingResult:
+    if dynamics is None:
+        if mu is None:
+            raise ValueError("Either dynamics or mu must be provided.")
+        dynamics = CR3BPDynamics(mu=float(mu))
+
     x0 = np.asarray(x0, dtype=float).reshape(6,)
     r_target = np.asarray(r_target, dtype=float).reshape(3,)
 
-    z0 = _pack_state_and_stm(x0)
-    res_tc = propagate(cr3bp_eom_with_stm, (t0, tc), z0, args=(mu,), dense_output=False)
+    z0 = pack_state_and_stm(x0)
+    res_tc = propagate(dynamics.eom_with_stm, (t0, tc), z0, dense_output=False)
     if not res_tc.success:
         raise RuntimeError(f"Propagation to tc failed: {res_tc.message}")
-    x_tc, _ = _unpack(res_tc.x[-1])
+    x_tc, _ = unpack_state_and_stm(res_tc.x[-1])
 
     dv = np.zeros(3) if dv0 is None else np.asarray(dv0, dtype=float).reshape(3,)
     history: list[dict] = []
@@ -59,12 +53,12 @@ def solve_single_impulse_position_target(
         x_burn = x_tc.copy()
         x_burn[3:6] += dv
 
-        z_tc = _pack_state_and_stm(x_burn, np.eye(6))
-        res_tf = propagate(cr3bp_eom_with_stm, (tc, tf), z_tc, args=(mu,), dense_output=False)
+        z_tc = pack_state_and_stm(x_burn, np.eye(6))
+        res_tf = propagate(dynamics.eom_with_stm, (tc, tf), z_tc, dense_output=False)
         if not res_tf.success:
             raise RuntimeError(f"Propagation to tf failed: {res_tf.message}")
 
-        x_tf, phi = _unpack(res_tf.x[-1])
+        x_tf, phi = unpack_state_and_stm(res_tf.x[-1])
         r_tf = x_tf[:3]
         err = r_tf - r_target
 

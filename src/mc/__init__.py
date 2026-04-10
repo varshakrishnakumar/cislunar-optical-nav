@@ -1,5 +1,5 @@
 
-from .io import load_results_csv, save_results_csv
+from .io import save_results_csv
 from .runner import run_monte_carlo
 from .sampler import make_trial_rng, sample_estimation_error, sample_injection_error
 from .stats import success_rate, summarize_results
@@ -15,5 +15,4 @@ __all__ = [
     "summarize_results",
     "success_rate",
     "save_results_csv",
-    "load_results_csv",
 ]

@@ -226,29 +226,3 @@ def joseph_update(
     P_upd = symmetrize(P_upd)
 
     return x_upd, P_upd, K, S
-
-
-def health_dict(h: MatrixHealth) -> dict[str, Any]:
-    return {
-        "name": h.name,
-        "shape": h.shape,
-        "is_finite": h.is_finite,
-        "symmetry_error_fro": h.symmetry_error_fro,
-        "min_eig": h.min_eig,
-        "max_eig": h.max_eig,
-        "cond": h.cond,
-        "is_spd": h.is_spd,
-        "chol_ok": h.chol_ok,
-    }
-
-
-def gate_dict(g: GateDecision) -> dict[str, Any]:
-    return {
-        "enabled": g.enabled,
-        "accepted": g.accepted,
-        "threshold": g.threshold,
-        "statistic": g.statistic,
-        "probability": g.probability,
-        "dof": g.dof,
-        "reason": g.reason,
-    }

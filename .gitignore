@@ -1,7 +1,9 @@
 .cisopt/
 __pycache__/
 *.pyc
+*.egg-info/
 .vscode/
+data/cache/
+data/kernels/
 results/
 .env
-

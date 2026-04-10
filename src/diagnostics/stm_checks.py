@@ -5,7 +5,6 @@ from typing import Any
 
 import numpy as np
 
-from diagnostics.types import HypothesisResult
 from dynamics.integrators import propagate
 from dynamics.variational import cr3bp_eom_with_stm
 
@@ -308,79 +307,3 @@ def compare_stm_to_finite_difference(
         },
     )
 
-
-def stm_comparison_to_hypothesis(
-    result: STMComparison,
-    *,
-    severity_on_fail: str = "failure",
-) -> HypothesisResult:
-    return HypothesisResult(
-        name=f"{result.name}_fd_validation",
-        passed=result.passed,
-        severity="info" if result.passed else severity_on_fail,
-        summary=(
-            f"{result.name} integrated STM agrees with finite-difference sensitivity."
-            if result.passed
-            else (
-                f"{result.name} integrated STM disagrees with finite-difference sensitivity; "
-                f"worst entry {result.worst_index} has abs error {result.max_abs_error:.3e} "
-                f"and rel error {result.max_rel_error:.3e}."
-            )
-        ),
-        details={
-            "shape": result.shape,
-            "dt": result.dt,
-            "fd_eps": result.fd_eps,
-            "max_abs_error": result.max_abs_error,
-            "max_rel_error": result.max_rel_error,
-            "fro_abs_error": result.fro_abs_error,
-            "fro_rel_error": result.fro_rel_error,
-            "worst_index": result.worst_index,
-            "analytic_value": result.analytic_value,
-            "numeric_value": result.numeric_value,
-            "diff_value": result.diff_value,
-            "atol": result.atol,
-            "rtol": result.rtol,
-            "column_checks": [
-                {
-                    "column_index": c.column_index,
-                    "abs_error_norm": c.abs_error_norm,
-                    "rel_error_norm": c.rel_error_norm,
-                    "analytic_col_norm": c.analytic_col_norm,
-                    "numeric_col_norm": c.numeric_col_norm,
-                }
-                for c in result.column_checks
-            ],
-        },
-    )
-
-
-def summarize_stm_comparisons(results: list[STMComparison]) -> dict[str, Any]:
-    if not results:
-        return {
-            "num_checks": 0,
-            "num_passed": 0,
-            "num_failed": 0,
-            "max_abs_error": float("nan"),
-            "max_rel_error": float("nan"),
-            "worst_check": None,
-        }
-
-    max_abs = -np.inf
-    max_rel = -np.inf
-    worst_name: str | None = None
-
-    for r in results:
-        if r.max_abs_error > max_abs:
-            max_abs = r.max_abs_error
-            worst_name = r.name
-        max_rel = max(max_rel, r.max_rel_error)
-
-    return {
-        "num_checks": len(results),
-        "num_passed": int(sum(r.passed for r in results)),
-        "num_failed": int(sum(not r.passed for r in results)),
-        "max_abs_error": float(max_abs),
-        "max_rel_error": float(max_rel),
-        "worst_check": worst_name,
-    }

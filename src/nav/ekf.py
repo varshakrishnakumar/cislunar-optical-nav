@@ -5,7 +5,8 @@ import warnings
 import numpy as np
 
 from dynamics.integrators import propagate
-from dynamics.variational import cr3bp_eom_with_stm
+from dynamics.models import CR3BPDynamics, DynamicsModel
+from dynamics.state import pack_state_and_stm, unpack_state_and_stm
 
 Array = np.ndarray
 
@@ -51,9 +52,9 @@ def _enforce_pd(P: Array, *, context: str = "") -> Array:
     return 0.5 * (P_fixed + P_fixed.T)
 
 
-def ekf_propagate_cr3bp_stm(
+def ekf_propagate_stm(
     *,
-    mu: float,
+    dynamics: DynamicsModel,
     x: Array,
     P: Array,
     t0: float,
@@ -69,25 +70,21 @@ def ekf_propagate_cr3bp_stm(
     if t0 == t1:
         return x.copy(), P.copy(), np.eye(6, dtype=float)
 
-    Phi0 = np.eye(6, dtype=float).reshape(-1, order="F")
-    z0 = np.concatenate([x, Phi0])
+    z0 = pack_state_and_stm(x)
 
     res = propagate(
-        cr3bp_eom_with_stm,
+        dynamics.eom_with_stm,
         (t0, t1),
         z0,
-        args=(mu,),
         rtol=rtol,
         atol=atol,
         max_step=max_step,
         dense_output=False,
     )
     if not res.success:
-        raise RuntimeError(f"CR3BP propagation failed: {res.message}")
+        raise RuntimeError(f"{dynamics.name} propagation failed: {res.message}")
 
-    zf = res.x[-1]
-    x_pred = zf[:6]
-    Phi = zf[6:].reshape((6, 6), order="F")
+    x_pred, Phi = unpack_state_and_stm(res.x[-1])
 
     dt = float(t1 - t0)
     Qd = Qd_white_accel(abs(dt), q_acc)
@@ -97,3 +94,28 @@ def ekf_propagate_cr3bp_stm(
     P_pred = _enforce_pd(P_pred, context=f"t0={t0:.4f}→t1={t1:.4f}")
 
     return x_pred, P_pred, Phi
+
+
+def ekf_propagate_cr3bp_stm(
+    *,
+    mu: float,
+    x: Array,
+    P: Array,
+    t0: float,
+    t1: float,
+    q_acc: float = 0.0,
+    rtol: float = 1e-10,
+    atol: float = 1e-12,
+    max_step: float = np.inf,
+) -> tuple[Array, Array, Array]:
+    return ekf_propagate_stm(
+        dynamics=CR3BPDynamics(mu=float(mu)),
+        x=x,
+        P=P,
+        t0=t0,
+        t1=t1,
+        q_acc=q_acc,
+        rtol=rtol,
+        atol=atol,
+        max_step=max_step,
+    )

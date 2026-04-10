@@ -1,10 +1,14 @@
 from __future__ import annotations
+
 import numpy as np
-import os
+import matplotlib.pyplot as plt
+
+from _common import ensure_src_on_path, repo_path
+
+ensure_src_on_path()
+
 from dynamics.cr3bp import CR3BP
 from dynamics.integrators import propagate
-
-import matplotlib.pyplot as plt
 
 
 def create_and_save_plot(X: np.ndarray, model: CR3BP, L: dict, option: str) -> None:
@@ -12,13 +16,13 @@ def create_and_save_plot(X: np.ndarray, model: CR3BP, L: dict, option: str) -> N
     p2 = model.primary2
 
     fig, ax = plt.subplots(figsize=(10, 8))
-    ax.plot(X[:, 0], X[:, 1], linewidth=2.0, label=f"Trajectory ({option})", color='blue')
+    ax.plot(X[:, 0], X[:, 1], linewidth=2.0, label=f"Trajectory ({option})", color="blue")
 
-    ax.scatter([p1[0]], [p1[1]], s=100, marker="o", label="Primary 1 (Earth)", color='green')
-    ax.scatter([p2[0]], [p2[1]], s=80, marker="o", label="Primary 2 (Moon)", color='orange')
+    ax.scatter([p1[0]], [p1[1]], s=100, marker="o", label="Primary 1 (Earth)", color="green")
+    ax.scatter([p2[0]], [p2[1]], s=80, marker="o", label="Primary 2 (Moon)", color="orange")
 
     for k in ["L1", "L2", "L3", "L4", "L5"]:
-        ax.scatter([L[k][0]], [L[k][1]], s=80, marker="x", label=k, color='red')
+        ax.scatter([L[k][0]], [L[k][1]], s=80, marker="x", label=k, color="red")
 
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("x", fontsize=14)
@@ -29,9 +33,11 @@ def create_and_save_plot(X: np.ndarray, model: CR3BP, L: dict, option: str) -> N
 
     plt.tight_layout()
 
-    os.makedirs('results/plots', exist_ok=True)
-    plt.savefig(f'results/plots/{option}_trajectory.png', dpi=300)
+    plots_dir = repo_path("results/plots")
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(plots_dir / f"{option}_trajectory.png", dpi=300)
     plt.close()
+
 
 def main() -> None:
     mu = 0.0121505856
@@ -44,14 +50,17 @@ def main() -> None:
         print(f"  {k}: {v}")
 
     L1 = L["L1"]
-    x0_A = np.array([
-        L1[0] - 1e-3,
-        0.0,
-        0.0,
-        0.0,
-        0.05,
-        0.0
-    ], dtype=float)
+    x0_A = np.array(
+        [
+            L1[0] - 1e-3,
+            0.0,
+            0.0,
+            0.0,
+            0.05,
+            0.0,
+        ],
+        dtype=float,
+    )
 
     p1 = model.primary1
     x0_B = np.array([p1[0] + 0.05, 0.0, 0.0, 0.0, 0.6, 0.0], dtype=float)
@@ -75,7 +84,7 @@ def main() -> None:
 
     X_A = res_A.sol(t_plot).T
 
-    create_and_save_plot(X_A, model, L, "01_cr3bp_nearL1")
+    create_and_save_plot(X_A, model, L, "baseline_cr3bp_nearL1")
 
     res_B = propagate(
         model.eom,
@@ -93,7 +102,8 @@ def main() -> None:
 
     X_B = res_B.sol(t_plot).T
 
-    create_and_save_plot(X_B, model, L, "01_cr3bp_nearEarth")
+    create_and_save_plot(X_B, model, L, "baseline_cr3bp_nearEarth")
+
 
 if __name__ == "__main__":
     main()

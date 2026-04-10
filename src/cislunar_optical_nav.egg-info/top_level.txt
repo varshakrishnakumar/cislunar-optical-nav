@@ -1,7 +1,0 @@
-cislunar_optical_nav
-cv
-dynamics
-guidance
-mc
-nav
-utils

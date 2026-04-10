@@ -153,6 +153,3 @@ def sample_at_times(result: PropagationResult, times: Union[Sequence[float], Arr
 
     return out
 
-
-def sample_at_time(result: PropagationResult, time: float) -> Array:
-    return sample_at_times(result, np.array([time], dtype=float))[0]

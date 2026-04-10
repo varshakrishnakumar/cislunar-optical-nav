@@ -5,7 +5,6 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-from diagnostics.types import HypothesisResult
 from nav.measurements.bearing import bearing_measurement_model
 
 
@@ -139,39 +138,6 @@ def compare_jacobians(
     )
 
 
-def jacobian_comparison_to_hypothesis(
-    result: JacobianComparison,
-    *,
-    severity_on_fail: str = "failure",
-) -> HypothesisResult:
-    return HypothesisResult(
-        name=f"{result.name}_comparison",
-        passed=result.passed,
-        severity="info" if result.passed else severity_on_fail,
-        summary=(
-            f"{result.name} analytic and numeric Jacobians agree within tolerance."
-            if result.passed
-            else (
-                f"{result.name} analytic and numeric Jacobians disagree; "
-                f"worst entry {result.worst_index} has abs error {result.max_abs_error:.3e} "
-                f"and rel error {result.max_rel_error:.3e}."
-            )
-        ),
-        details={
-            "shape": result.shape,
-            "max_abs_error": result.max_abs_error,
-            "max_rel_error": result.max_rel_error,
-            "rms_abs_error": result.rms_abs_error,
-            "worst_index": result.worst_index,
-            "analytic_value": result.analytic_value,
-            "numeric_value": result.numeric_value,
-            "diff_value": result.diff_value,
-            "atol": result.atol,
-            "rtol": result.rtol,
-        },
-    )
-
-
 def run_jacobian_check(
     *,
     fun: VectorFn,
@@ -246,34 +212,3 @@ def check_bearing_measurement_jacobian(
         atol=atol,
         rtol=rtol,
     )
-
-
-def summarize_comparisons(results: list[JacobianComparison]) -> dict[str, Any]:
-    if not results:
-        return {
-            "num_checks": 0,
-            "num_passed": 0,
-            "num_failed": 0,
-            "max_abs_error": float("nan"),
-            "max_rel_error": float("nan"),
-            "worst_check": None,
-        }
-
-    max_abs = -np.inf
-    max_rel = -np.inf
-    worst_name: str | None = None
-
-    for r in results:
-        if r.max_abs_error > max_abs:
-            max_abs = r.max_abs_error
-            worst_name = r.name
-        max_rel = max(max_rel, r.max_rel_error)
-
-    return {
-        "num_checks": len(results),
-        "num_passed": int(sum(r.passed for r in results)),
-        "num_failed": int(sum(not r.passed for r in results)),
-        "max_abs_error": float(max_abs),
-        "max_rel_error": float(max_rel),
-        "worst_check": worst_name,
-    }

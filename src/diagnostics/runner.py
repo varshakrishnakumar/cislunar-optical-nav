@@ -4,7 +4,6 @@ from dataclasses import asdict
 from typing import NamedTuple, Optional
 
 import numpy as np
-from cv.pointing import camera_dcm_from_boresight
 from diagnostics.config import CaseConfig
 from diagnostics.health import check_matrix_health, regularize_spd
 from diagnostics.types import (
@@ -127,16 +126,6 @@ def make_default_camera() -> Intrinsics:
 
 def moon_position(mu: float) -> Array:
     return np.array([1.0 - mu, 0.0, 0.0], dtype=float)
-
-
-def project_los_to_pixel(
-    u_frame: Array,
-    intr: Intrinsics,
-    R_cam_from_frame: Array,
-) -> tuple[float, float]:
-    u_cam = rotate_vector(np.asarray(R_cam_from_frame, dtype=float), np.asarray(u_frame, dtype=float))
-    u_px, v_px = los_cam_to_pixel(u_cam, intr, behind="nan")
-    return float(np.asarray(u_px)), float(np.asarray(v_px))
 
 
 def predict_pixel_from_state(
