@@ -87,7 +87,13 @@ def ekf_propagate_stm(
     x_pred, Phi = unpack_state_and_stm(res.x[-1])
 
     dt = float(t1 - t0)
-    Qd = Qd_white_accel(abs(dt), q_acc)
+    # dt must be positive; t0 == t1 is handled by the early return above.
+    if dt < 0.0:
+        raise ValueError(
+            f"ekf_propagate_stm: t1 ({t1:.6g}) must be >= t0 ({t0:.6g}). "
+            "Backward propagation is not supported."
+        )
+    Qd = Qd_white_accel(dt, q_acc)
     P_pred = Phi @ P @ Phi.T + Qd
     P_pred = 0.5 * (P_pred + P_pred.T)
 

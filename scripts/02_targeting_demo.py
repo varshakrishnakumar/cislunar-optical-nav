@@ -1,8 +1,12 @@
 
 from __future__ import annotations
 
+from _common import ensure_src_on_path
+
+ensure_src_on_path()
+
 import numpy as np
-import matplotlib.pyplot as plt
+from visualization.style import plt
 
 from dynamics.integrators import propagate
 from dynamics.variational import cr3bp_eom_with_stm
@@ -132,7 +136,7 @@ def main() -> None:
     print("Targeting result:")
     print(f"  converged: {info['converged']}")
     print(f"  iterations: {info['iterations']}")
-    print(f"  dv = {dv} (ND units)")
+    print(f"  dv = {dv} (dimensionless CR3BP velocity units)")
     print(f"  |dv| = {np.linalg.norm(dv):.6e}")
     print(f"  final position error = {info['final_err']}, norm={np.linalg.norm(info['final_err']):.3e}")
 
@@ -175,7 +179,7 @@ def main() -> None:
     plt.tight_layout()
 
     plt.savefig('results/plots/02_targeting_demo_plot.png', dpi=300)
-    plt.show()
+    plt.close(fig)
 
 
 if __name__ == "__main__":

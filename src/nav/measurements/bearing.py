@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
-from typing import Optional
 
 import numpy as np
 
 from diagnostics.health import (
     GateDecision,
+    chol_solve_spd,
     decide_gate,
-    joseph_update,
     normalized_innovation_squared,
     symmetrize,
 )
@@ -40,6 +40,9 @@ class BearingUpdateResult:
     K: Array
     gate: GateDecision
     accepted: bool
+    final_innovation: Array | None = None
+    iterations: int = 0
+    converged: bool = False
 
 
 def _unit(v: Array, eps: float = 1e-12) -> Array:
@@ -135,9 +138,57 @@ def bearing_update_tangent(
     gating_enabled: bool = False,
     gate_probability: float = 0.9973,
     gate_dof: int = 2,
+    max_iterations: int = 3,
+    step_tolerance: float = 1e-12,
+) -> BearingUpdateResult:
+    return bearing_update_tangent_iekf(
+        x=x,
+        P=P,
+        u_meas=u_meas,
+        r_body=r_body,
+        sigma_theta=sigma_theta,
+        gating_enabled=gating_enabled,
+        gate_probability=gate_probability,
+        gate_dof=gate_dof,
+        max_iterations=max_iterations,
+        step_tolerance=step_tolerance,
+    )
+
+
+def _innovation_gain(P: Array, H: Array, R: Array) -> tuple[Array, Array]:
+    S = symmetrize(H @ P @ H.T + R)
+    PHt = P @ H.T
+    K = chol_solve_spd(S, PHt.T).T
+    return S, K
+
+
+def _joseph_covariance_update(P: Array, H: Array, R: Array, K: Array) -> Array:
+    I = np.eye(P.shape[0], dtype=float)
+    P_upd = (I - K @ H) @ P @ (I - K @ H).T + K @ R @ K.T
+    return symmetrize(P_upd)
+
+
+def bearing_update_tangent_iekf(
+    x: Array,
+    P: Array,
+    u_meas: Array,
+    r_body: Array,
+    sigma_theta: float,
+    *,
+    gating_enabled: bool = False,
+    gate_probability: float = 0.9973,
+    gate_dof: int = 2,
+    max_iterations: int = 3,
+    step_tolerance: float = 1e-12,
 ) -> BearingUpdateResult:
     x = np.asarray(x, dtype=float).reshape(6)
     P = symmetrize(np.asarray(P, dtype=float).reshape(6, 6))
+
+    max_iterations = int(max_iterations)
+    if max_iterations <= 0:
+        raise ValueError("max_iterations must be > 0")
+    if not np.isfinite(step_tolerance) or step_tolerance < 0.0:
+        raise ValueError("step_tolerance must be finite and >= 0")
 
     model = bearing_measurement_model(
         x=x,
@@ -150,7 +201,7 @@ def bearing_update_tangent(
     H = model.H
     R = model.R
 
-    S = symmetrize(H @ P @ H.T + R)
+    S, _ = _innovation_gain(P, H, R)
     nis = normalized_innovation_squared(y, S, regularize=True)
 
     gate = decide_gate(
@@ -172,25 +223,74 @@ def bearing_update_tangent(
             K=np.zeros((6, 2), dtype=float),
             gate=gate,
             accepted=False,
+            final_innovation=y,
+            iterations=0,
+            converged=False,
         )
 
-    x_upd, P_upd, K, _ = joseph_update(
-        x=x,
-        P=P,
-        H=H,
-        R=R,
-        y=y,
+    x_prior = x.copy()
+    x_iter = x.copy()
+    converged = False
+    iterations = 0
+
+    for iterations in range(1, max_iterations + 1):
+        iter_model = bearing_measurement_model(
+            x=x_iter,
+            u_meas=u_meas,
+            r_body=r_body,
+            sigma_theta=sigma_theta,
+        )
+        _, K_iter = _innovation_gain(P, iter_model.H, iter_model.R)
+
+        correction_residual = iter_model.residual_2d + iter_model.H @ (x_iter - x_prior)
+        x_next = x_prior + K_iter @ correction_residual
+
+        step_norm = float(np.linalg.norm(x_next - x_iter))
+        x_iter = np.asarray(x_next, dtype=float).reshape(6)
+
+        if step_norm <= float(step_tolerance) * (1.0 + float(np.linalg.norm(x_iter))):
+            converged = True
+            break
+
+    final_model = bearing_measurement_model(
+        x=x_iter,
+        u_meas=u_meas,
+        r_body=r_body,
+        sigma_theta=sigma_theta,
     )
+    final_y = final_model.residual_2d
+    H_final = final_model.H
+    R_final = final_model.R
+    S_final, K_final = _innovation_gain(P, H_final, R_final)
+    P_upd = _joseph_covariance_update(P, H_final, R_final, K_final)
+
+    # Warn if the final innovation is suspiciously large (> 5σ in angle units),
+    # which suggests the iteration converged to a local minimum rather than
+    # driving the residual to zero.
+    _innov_norm = float(np.linalg.norm(final_y))
+    _innov_thr = 5.0 * float(sigma_theta) * float(np.sqrt(2.0))
+    if _innov_norm > _innov_thr:
+        warnings.warn(
+            f"IEKF bearing update: final innovation norm ({_innov_norm:.3e} rad) "
+            f"exceeds 5σ threshold ({_innov_thr:.3e} rad). "
+            "The iteration may have converged to a local minimum — "
+            "consider increasing max_iterations or inspecting the measurement.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     return BearingUpdateResult(
-        x_upd=x_upd,
+        x_upd=x_iter,
         P_upd=P_upd,
         innovation=y,
         nis=nis,
-        H=H,
-        R=R,
-        S=S,
-        K=K,
+        H=H_final,
+        R=R_final,
+        S=S_final,
+        K=K_final,
         gate=gate,
         accepted=True,
+        final_innovation=final_y,
+        iterations=iterations,
+        converged=converged,
     )

@@ -1,107 +1,38 @@
 from __future__ import annotations
 
-from pathlib import Path
-import importlib.util
-import csv
+import argparse
+
 import numpy as np
-import matplotlib.pyplot as plt
+
+from _analysis_common import (
+    AMBER as _AMBER,
+    CYAN as _CYAN,
+    GREEN as _GREEN,
+    RED as _RED,
+    VIOLET as _VIOLET,
+    apply_dark_theme as _apply_dark_theme,
+    load_midcourse_run_case as _load_run_case,
+    plot_xy as _plot_xy,
+    write_dict_rows_csv as _write_csv,
+)
+from _common import repo_path
 
 
-_BG     = "#080B14"
-_PANEL  = "#0E1220"
-_BORDER = "#1C2340"
-_TEXT   = "#DCE0EC"
-_DIM    = "#5A6080"
-_CYAN   = "#22D3EE"
-_AMBER  = "#F59E0B"
-_GREEN  = "#10B981"
-_RED    = "#F43F5E"
-_VIOLET = "#8B5CF6"
-
-
-def _apply_dark_theme() -> None:
-    plt.rcParams.update({
-        "figure.facecolor":  _BG,
-        "axes.facecolor":    _PANEL,
-        "axes.edgecolor":    _BORDER,
-        "axes.labelcolor":   _TEXT,
-        "axes.titlecolor":   _TEXT,
-        "text.color":        _TEXT,
-        "xtick.color":       _TEXT,
-        "ytick.color":       _TEXT,
-        "grid.color":        _BORDER,
-        "grid.alpha":        1.0,
-        "grid.linestyle":    "--",
-        "lines.linewidth":   2.0,
-        "legend.facecolor":  _PANEL,
-        "legend.edgecolor":  _BORDER,
-        "legend.labelcolor": _TEXT,
-        "savefig.facecolor": _BG,
-        "savefig.edgecolor": _BG,
-        "font.size":         11,
-    })
-
-
-def _load_run_case():
-    here  = Path(__file__).resolve()
-    cand  = here.parent / "06_midcourse_ekf_correction.py"
-    if not cand.exists():
-        raise FileNotFoundError(f"Expected 06A script at: {cand}")
-    spec = importlib.util.spec_from_file_location("midcourse06a", cand)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Failed to load module spec for {cand}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    if not hasattr(mod, "run_case"):
-        raise AttributeError(f"{cand} does not define run_case(...)")
-    return mod.run_case
-
-
-def _write_csv(path: Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        raise ValueError("No rows to write")
-    fieldnames = list(rows[0].keys())
-    with path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        for r in rows:
-            w.writerow(r)
-
-
-def _plot_xy(
-    x: np.ndarray,
-    y: np.ndarray,
-    xlabel: str,
-    ylabel: str,
-    title: str,
-    outpath: Path,
-    color: str = _CYAN,
-    marker_color: str = _AMBER,
-) -> None:
-    outpath.parent.mkdir(parents=True, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    fig.patch.set_facecolor(_BG)
-    ax.set_facecolor(_PANEL)
-    for sp in ax.spines.values():
-        sp.set_edgecolor(_BORDER)
-
-    ax.plot(x, y, color=color, lw=2.0, zorder=3)
-    ax.scatter(x, y, s=50, color=marker_color, zorder=4, edgecolors=_BG, lw=0.5)
-    ax.set_xlabel(xlabel, color=_TEXT)
-    ax.set_ylabel(ylabel, color=_TEXT)
-    ax.set_title(title, color=_TEXT)
-    ax.grid(True)
-    fig.tight_layout()
-    fig.savefig(outpath, dpi=200, facecolor=_BG)
-    plt.close(fig)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Deterministic sensitivity sweeps for the EKF midcourse-correction pipeline.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--plots-dir", default="results/plots")
+    return parser.parse_args()
 
 
 def main() -> None:
+    args = parse_args()
     _apply_dark_theme()
     run_case = _load_run_case()
 
-    plots_dir = Path("results/plots")
+    plots_dir = repo_path(args.plots_dir)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     mu       = 0.0121505856
@@ -156,19 +87,19 @@ def main() -> None:
 
     _plot_xy(sigma_arr, dv_infl,
              xlabel="σ_px  [px]",
-             ylabel="ΔV inflation  (|dv_ekf| − |dv_perfect|)  [ND]",
+             ylabel="Delta-V inflation  [dimensionless CR3BP velocity]",
              title="ΔV Inflation vs Pixel Noise  (tc fixed)",
              outpath=plots_dir / "06b_dv_inflation_vs_sigma.png",
              color=_CYAN, marker_color=_AMBER)
     _plot_xy(sigma_arr, miss_ekf,
              xlabel="σ_px  [px]",
-             ylabel="Terminal miss  [ND]",
+             ylabel="Terminal miss  [dimensionless CR3BP length]",
              title="Terminal Miss vs Pixel Noise  (tc fixed)",
              outpath=plots_dir / "06b_miss_vs_sigma.png",
              color=_VIOLET, marker_color=_AMBER)
     _plot_xy(sigma_arr, poserr_tc,
              xlabel="σ_px  [px]",
-             ylabel="‖r̂(tc) − r(tc)‖  [ND]",
+             ylabel="‖r̂(tc) − r(tc)‖  [dimensionless CR3BP length]",
              title="Position Error at tc vs Pixel Noise  (tc fixed)",
              outpath=plots_dir / "06b_poserr_tc_vs_sigma.png",
              color=_GREEN, marker_color=_AMBER)
@@ -210,20 +141,20 @@ def main() -> None:
     poserr_tc_tc = np.array([r["pos_err_tc"]    for r in t0_sel], dtype=float)
 
     _plot_xy(tc_arr, dv_infl_tc,
-             xlabel="Correction time  tc  [ND]",
-             ylabel="ΔV inflation  [ND]",
+             xlabel="Correction time  tc  [dimensionless CR3BP time]",
+             ylabel="Delta-V inflation  [dimensionless CR3BP velocity]",
              title="ΔV Inflation vs Correction Time  (σ_px fixed)",
              outpath=plots_dir / "06b_dv_inflation_vs_tc.png",
              color=_CYAN, marker_color=_AMBER)
     _plot_xy(tc_arr, miss_ekf_tc,
-             xlabel="Correction time  tc  [ND]",
-             ylabel="Terminal miss  [ND]",
+             xlabel="Correction time  tc  [dimensionless CR3BP time]",
+             ylabel="Terminal miss  [dimensionless CR3BP length]",
              title="Terminal Miss vs Correction Time  (σ_px fixed)",
              outpath=plots_dir / "06b_miss_vs_tc.png",
              color=_VIOLET, marker_color=_AMBER)
     _plot_xy(tc_arr, poserr_tc_tc,
-             xlabel="Correction time  tc  [ND]",
-             ylabel="‖r̂(tc) − r(tc)‖  [ND]",
+             xlabel="Correction time  tc  [dimensionless CR3BP time]",
+             ylabel="‖r̂(tc) − r(tc)‖  [dimensionless CR3BP length]",
              title="Position Error at tc vs Correction Time  (σ_px fixed)",
              outpath=plots_dir / "06b_poserr_tc_vs_tc.png",
              color=_GREEN, marker_color=_AMBER)
@@ -266,19 +197,19 @@ def main() -> None:
 
     _plot_xy(sigma_bonus, dv_infl_bonus,
              xlabel="σ_px  [px]",
-             ylabel="ΔV inflation  [ND]",
+             ylabel="Delta-V inflation  [dimensionless CR3BP velocity]",
              title="ΔV Inflation vs σ_px  (dropout=0.05, fixed pointing)",
              outpath=plots_dir / "06b_bonus_dv_inflation_vs_sigma.png",
              color=_RED, marker_color=_AMBER)
     _plot_xy(sigma_bonus, miss_bonus,
              xlabel="σ_px  [px]",
-             ylabel="Terminal miss  [ND]",
+             ylabel="Terminal miss  [dimensionless CR3BP length]",
              title="Terminal Miss vs σ_px  (dropout=0.05, fixed pointing)",
              outpath=plots_dir / "06b_bonus_miss_vs_sigma.png",
              color=_RED, marker_color=_AMBER)
     _plot_xy(sigma_bonus, poserr_bonus,
              xlabel="σ_px  [px]",
-             ylabel="‖r̂(tc) − r(tc)‖  [ND]",
+             ylabel="‖r̂(tc) − r(tc)‖  [dimensionless CR3BP length]",
              title="Position Error at tc vs σ_px  (dropout=0.05, fixed pointing)",
              outpath=plots_dir / "06b_bonus_poserr_tc_vs_sigma.png",
              color=_RED, marker_color=_AMBER)

@@ -392,12 +392,12 @@ def check_final_tracking_error(
             passed=pos_ok,
             severity="warning" if not pos_ok else "info",
             summary=(
-                f"Final position error ({s.final_pos_err:.3e} ND) within threshold "
-                f"({cfg.final_pos_err_warn:.3e} ND)."
+                f"Final position error ({s.final_pos_err:.3e} dimensionless CR3BP length) within threshold "
+                f"({cfg.final_pos_err_warn:.3e} dimensionless CR3BP length)."
                 if pos_ok
                 else
-                f"Final position error ({s.final_pos_err:.3e} ND) exceeded threshold "
-                f"({cfg.final_pos_err_warn:.3e} ND)."
+                f"Final position error ({s.final_pos_err:.3e} dimensionless CR3BP length) exceeded threshold "
+                f"({cfg.final_pos_err_warn:.3e} dimensionless CR3BP length)."
             ),
             details={"final_pos_err": s.final_pos_err, "threshold": cfg.final_pos_err_warn},
         ),
@@ -406,12 +406,12 @@ def check_final_tracking_error(
             passed=vel_ok,
             severity="warning" if not vel_ok else "info",
             summary=(
-                f"Final velocity error ({s.final_vel_err:.3e} ND) within threshold "
-                f"({cfg.final_vel_err_warn:.3e} ND)."
+                f"Final velocity error ({s.final_vel_err:.3e} dimensionless CR3BP velocity) within threshold "
+                f"({cfg.final_vel_err_warn:.3e} dimensionless CR3BP velocity)."
                 if vel_ok
                 else
-                f"Final velocity error ({s.final_vel_err:.3e} ND) exceeded threshold "
-                f"({cfg.final_vel_err_warn:.3e} ND)."
+                f"Final velocity error ({s.final_vel_err:.3e} dimensionless CR3BP velocity) exceeded threshold "
+                f"({cfg.final_vel_err_warn:.3e} dimensionless CR3BP velocity)."
             ),
             details={"final_vel_err": s.final_vel_err, "threshold": cfg.final_vel_err_warn},
         ),

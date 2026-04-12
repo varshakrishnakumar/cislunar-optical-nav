@@ -32,6 +32,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-step-days", type=float, default=0.05)
     parser.add_argument("--target", action="append", default=None, help="Point-mass body; default SUN, EARTH, MOON.")
     parser.add_argument("--out-csv", type=Path, default=None)
+    parser.add_argument(
+        "--out-relative-csv",
+        type=Path,
+        default=None,
+        help="Optional path for Earth/Moon-relative and synodic trajectory diagnostics.",
+    )
+    parser.add_argument(
+        "--out-plot",
+        type=Path,
+        default=None,
+        help="Optional path for a SPICE-aware Earth/Moon-relative trajectory report image.",
+    )
     return parser.parse_args()
 
 
@@ -44,6 +56,7 @@ def main() -> int:
     from dynamics.spice_ephemeris import make_spice_point_mass_dynamics
     from orbits import collect_periodic_orbit_candidates
     from orbits.spice_bridge import periodic_orbit_record_to_spice_inertial_state
+    from visualization.spice import save_spice_relative_trajectory_csv, save_spice_trajectory_report
 
     libration_points = selected_libration_points(args)
     branches = selected_branches(args, default=("S",))
@@ -130,6 +143,27 @@ def main() -> int:
         if args.out_csv is not None:
             outpath = write_state_history_csv(args.out_csv, res.t, res.x)
             print(f"wrote_csv {outpath}")
+
+        if args.out_relative_csv is not None:
+            relative_path = save_spice_relative_trajectory_csv(
+                res.t,
+                res.x,
+                ephemeris,
+                repo_path(args.out_relative_csv),
+                mass_ratio=record.system.mass_ratio,
+            )
+            print(f"wrote_relative_csv {relative_path}")
+
+        if args.out_plot is not None:
+            plot_path = save_spice_trajectory_report(
+                res.t,
+                res.x,
+                ephemeris,
+                repo_path(args.out_plot),
+                mass_ratio=record.system.mass_ratio,
+                title=f"Earth-Moon {record.family} L{record.libration_point} {record.branch} seed",
+            )
+            print(f"wrote_plot {plot_path}")
     finally:
         ephemeris.close()
 

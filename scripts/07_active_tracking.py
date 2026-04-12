@@ -6,10 +6,14 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
+from _common import ensure_src_on_path
+
+ensure_src_on_path()
+
 import matplotlib.gridspec as gridspec
 import numpy as np
 from scipy.stats import chi2
+from visualization.style import plt
 
 from dynamics.cr3bp import CR3BP
 from dynamics.integrators import propagate
@@ -100,7 +104,7 @@ POINTING = dict(
 
 SANITY = dict(
     enabled=True,
-    sigma_px=0.0,
+    sigma_px=1e-6,
     dropout_p=0.0,
     dx0=np.array([1e-7, -1e-7, 0.0, 0.0, 0.0, 0.0], dtype=float),
     est_err=np.array([1e-7, 1e-7, 0.0, 0.0, 0.0, 0.0], dtype=float),
@@ -192,7 +196,7 @@ def _compute_pointing(
 def _invalid_pixel(t: float, sigma_px: float, reason: str) -> PixelMeasurement:
     return PixelMeasurement(
         valid=False, u_px=float("nan"), v_px=float("nan"),
-        sigma_px=float(sigma_px), t=float(t), reason=reason,
+        sigma_px=float(sigma_px), t=float(t), meta={"reason": reason},
     )
 
 
@@ -235,7 +239,7 @@ def _append_epoch_log(
     meta = {}
     if hasattr(pix, "meta") and isinstance(pix.meta, dict):
         meta = pix.meta
-    offb = float(off_boresight_angle(pix)) if visible else float("nan")
+    offb = float(off_boresight_angle(los_true, los_cmd)) if visible else float("nan")
 
     u_px_val = float(pix.u_px) if visible and np.isfinite(pix.u_px) else float("nan")
     v_px_val = float(pix.v_px) if visible and np.isfinite(pix.v_px) else float("nan")
@@ -522,7 +526,7 @@ def make_static_plots(results: dict[str, Any], K: Intrinsics, stem: str) -> list
     sc = ax.scatter(u[mask], v[mask], c=t[mask], cmap="plasma",
                     s=10, vmin=t[0], vmax=t[-1], zorder=3)
     cb = fig.colorbar(sc, ax=ax, fraction=0.04, pad=0.02)
-    cb.set_label("t [ND]", color=_TEXT)
+    cb.set_label("t [dimensionless CR3BP time]", color=_TEXT)
     cb.ax.yaxis.set_tick_params(color=_TEXT)
     plt.setp(cb.ax.yaxis.get_ticklabels(), color=_TEXT)
     ax.set_xlabel("u [px]"); ax.set_ylabel("v [px]")
@@ -536,7 +540,7 @@ def make_static_plots(results: dict[str, Any], K: Intrinsics, stem: str) -> list
     ax.step(t, visible.astype(int), where="post", color=_GREEN, lw=1.5, label="visible")
     ax.step(t, upd_used.astype(int) * 0.85, where="post",
             color=_CYAN, lw=1.5, label="EKF update", alpha=0.9)
-    ax.set_xlabel("t [ND]"); ax.set_ylabel("flag")
+    ax.set_xlabel("t [dimensionless CR3BP time]"); ax.set_ylabel("flag")
     ax.set_title(f"Visibility / Update Timeline — {case_name}")
     ax.set_yticks([0, 1]); ax.legend()
     p = out_dir / f"{stem}_visibility.png"
@@ -549,7 +553,7 @@ def make_static_plots(results: dict[str, Any], K: Intrinsics, stem: str) -> list
     ax.semilogy(t, pos_err + 1e-12, color=_CYAN,  lw=1.8, label="‖pos err‖")
     ax.semilogy(t, vel_err + 1e-12, color=_AMBER, lw=1.5, ls="--",
                 label="‖vel err‖", alpha=0.85)
-    ax.set_xlabel("t [ND]"); ax.set_ylabel("Error norm [ND]")
+    ax.set_xlabel("t [dimensionless CR3BP time]"); ax.set_ylabel("Error norm [dimensionless CR3BP units]")
     ax.set_title(f"State Estimation Errors — {case_name}")
     ax.legend()
     p = out_dir / f"{stem}_errors.png"
@@ -561,7 +565,7 @@ def make_static_plots(results: dict[str, Any], K: Intrinsics, stem: str) -> list
     ax.plot(t, ang_est, color=_CYAN,  lw=1.8, label="true vs estimated LOS")
     ax.plot(t, ang_cmd, color=_AMBER, lw=1.5, ls="--",
             label="true vs commanded LOS", alpha=0.85)
-    ax.set_xlabel("t [ND]"); ax.set_ylabel("Angle [deg]")
+    ax.set_xlabel("t [dimensionless CR3BP time]"); ax.set_ylabel("Angle [deg]")
     ax.set_title(f"Pointing Diagnostics — {case_name}")
     ax.legend()
     p = out_dir / f"{stem}_pointing.png"
@@ -578,7 +582,7 @@ def make_static_plots(results: dict[str, Any], K: Intrinsics, stem: str) -> list
     out_b = nis_ok & ~in_b
     ax.scatter(t[in_b],  nis[in_b],  s=10, c=_GREEN, zorder=4)
     ax.scatter(t[out_b], nis[out_b], s=10, c=_RED,   zorder=4)
-    ax.set_xlabel("t [ND]"); ax.set_ylabel("NIS")
+    ax.set_xlabel("t [dimensionless CR3BP time]"); ax.set_ylabel("NIS")
     ax.set_title(f"NIS — {case_name}  (mean={np.nanmean(nis):.2f})")
     ax.set_ylim(0, 20); ax.legend()
     p = out_dir / f"{stem}_nis.png"
@@ -599,7 +603,7 @@ def make_static_plots(results: dict[str, Any], K: Intrinsics, stem: str) -> list
     axs[1].set_ylabel("px from principal point")
 
     axs[2].semilogy(t, pos_err + 1e-12, color=_CYAN, lw=1.8)
-    axs[2].set_xlabel("t [ND]"); axs[2].set_ylabel("‖r̂ − r‖ [ND]")
+    axs[2].set_xlabel("t [dimensionless CR3BP time]"); axs[2].set_ylabel("‖r̂ − r‖ [dimensionless CR3BP length]")
 
     p = out_dir / f"{stem}_summary.png"
     fig.savefig(p, dpi=200, bbox_inches="tight"); plt.close(fig)
@@ -661,7 +665,7 @@ def make_comparison_plots(
                     alpha=0.7, label="active ‖vel err‖")
     axs[1].semilogy(tf, vel_err_f + 1e-12, color=_AMBER, lw=1.2, ls=":",
                     alpha=0.7, label="fixed ‖vel err‖")
-    axs[1].set_ylabel("Error norm [ND]"); axs[1].legend(ncol=2, fontsize=9)
+    axs[1].set_ylabel("Error norm [dimensionless CR3BP units]"); axs[1].legend(ncol=2, fontsize=9)
 
     nis_lo = chi2.ppf(0.025, df=2); nis_hi = chi2.ppf(0.975, df=2)
     axs[2].fill_between(ta, nis_lo, nis_hi, color=_GREEN, alpha=0.08)
@@ -670,7 +674,7 @@ def make_comparison_plots(
                    label="active NIS", zorder=3)
     axs[2].scatter(tf[nis_ok_f], nis_f[nis_ok_f], s=8, c=_AMBER, alpha=0.7,
                    label="fixed NIS",  zorder=3)
-    axs[2].set_ylabel("NIS"); axs[2].set_xlabel("t [ND]")
+    axs[2].set_ylabel("NIS"); axs[2].set_xlabel("t [dimensionless CR3BP time]")
     axs[2].set_ylim(0, 20); axs[2].legend(ncol=2, fontsize=9)
 
     p = out_dir / f"{stem}_comparison.png"
@@ -779,12 +783,12 @@ def make_tracking_feed_video(
         sc = _GREEN if upd_used[i] else (_AMBER if visible[i] else _RED)
         txt = (
             f"case = {results['case_name']}\n"
-            f"t = {t[i]:.3f} ND\n"
+            f"t = {t[i]:.3f} dimensionless\n"
             f"u,v = ({u[i]:.1f}, {v[i]:.1f})\n"
             f"{status}\n"
             f"off-boresight = {offb_deg[i]:.2f}°\n"
             f"NIS = {nis[i]:.3f}\n"
-            f"‖pos err‖ = {pos_err[i]:.3e} ND\n"
+            f"‖pos err‖ = {pos_err[i]:.3e} dimensionless\n"
             f"reason = {reasons[i]}"
         )
         ax.text(12, 18, txt, color=sc, fontsize=10, va="top", ha="left",

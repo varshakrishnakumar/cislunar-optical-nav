@@ -79,9 +79,18 @@ def pixel_noise_to_sigma_theta(
     fy = float(K.fy)
 
     if approx == "fx_only":
+        # Conservative scalar approximation: map pixel noise through the
+        # horizontal focal length only.  σ_θ ≈ σ_px / f_x.
+        # Valid when f_x ≈ f_y or when a conservative (larger) σ is preferred.
         return float(sigma_px / fx)
 
     if approx == "rms_fx_fy":
+        # Isotropic pixel noise, propagated independently through each focal
+        # length and combined in quadrature:
+        #   σ_θ,x = σ_px / f_x,  σ_θ,y = σ_px / f_y
+        #   σ_θ = √(σ_θ,x² + σ_θ,y²) / √2  (RMS across both axes)
+        # The /√2 normalises so that σ_θ equals σ_px/f_x when f_x = f_y,
+        # keeping the result consistent with the fx_only mode for square pixels.
         a = sigma_px / fx
         b = sigma_px / fy
         return float(np.sqrt(a * a + b * b) / np.sqrt(2.0))

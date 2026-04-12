@@ -4,9 +4,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from _common import ensure_src_on_path
+
+ensure_src_on_path()
+
 import numpy as np
-import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from visualization.style import plt
 from cv.pointing import camera_dcm_from_boresight
 from dynamics.cr3bp import CR3BP
 from dynamics.integrators import propagate
@@ -101,7 +105,7 @@ def _render_camera_frame(
             status = "NO SIGNAL"
             status_color = _RED
 
-        txt = f"t = {t:7.3f} ND\n{uv_str}\n{status}"
+        txt = f"t = {t:7.3f} dimensionless\n{uv_str}\n{status}"
         ax.text(14, 22, txt, color=status_color, fontsize=12,
                 family="monospace", va="top", ha="left",
                 bbox=dict(facecolor=(0, 0, 0, 0.55),
@@ -164,7 +168,7 @@ def _render_split_frame(
             uv_str = "u,v = (   —  ,    —  )"
             status = "NO SIGNAL"
             sc = _RED
-        axL.text(14, 22, f"t = {t:7.3f} ND\n{uv_str}\n{status}",
+        axL.text(14, 22, f"t = {t:7.3f} dimensionless\n{uv_str}\n{status}",
                  color=sc, fontsize=12, family="monospace",
                  va="top", ha="left",
                  bbox=dict(facecolor=(0, 0, 0, 0.55),
@@ -187,8 +191,8 @@ def _render_split_frame(
                     s=40, c=_AMBER, marker="D", zorder=5)
 
     axR.set_title("XY Orbit (near L1)", fontsize=10)
-    axR.set_xlabel("x [ND]", fontsize=9)
-    axR.set_ylabel("y [ND]", fontsize=9)
+    axR.set_xlabel("x [dimensionless CR3BP length]", fontsize=9)
+    axR.set_ylabel("y [dimensionless CR3BP length]", fontsize=9)
     axR.legend(loc="lower left", fontsize=9)
 
     pts = np.vstack([r_true_xy, r_est_xy])

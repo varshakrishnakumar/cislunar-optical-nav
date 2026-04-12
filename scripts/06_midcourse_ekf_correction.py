@@ -3,6 +3,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Literal
 
+from _analysis_common import (
+    AMBER as _AMBER,
+    BG as _BG,
+    BORDER as _BORDER,
+    CYAN as _CYAN,
+    EARTH as _EARTH_C,
+    GREEN as _GREEN,
+    MOON as _MOON_C,
+    ORANGE as _ORANGE,
+    PANEL as _PANEL,
+    RED as _RED,
+    TEXT as _TEXT,
+    VIOLET as _VIOLET,
+    apply_dark_theme as _apply_dark_theme,
+)
+
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
@@ -10,7 +26,7 @@ from scipy.stats import chi2
 
 from dynamics.cr3bp import CR3BP
 from dynamics.integrators import propagate
-from nav.ekf import ekf_propagate_cr3bp_stm
+from nav.ekf import ekf_propagate_cr3bp_stm, ekf_propagate_stm
 from nav.measurements.bearing import bearing_update_tangent
 from nav.measurements.pixel_bearing import pixel_detection_to_bearing
 from cv.camera import Intrinsics
@@ -22,43 +38,15 @@ from guidance.targeting import solve_single_impulse_position_target
 CameraMode = Literal["fixed", "truth_tracking", "estimate_tracking"]
 _VALID_CAMERA_MODES = ("fixed", "truth_tracking", "estimate_tracking")
 
-
-_BG     = "#080B14"
-_PANEL  = "#0E1220"
-_BORDER = "#1C2340"
-_TEXT   = "#DCE0EC"
-_DIM    = "#5A6080"
-_CYAN   = "#22D3EE"
-_AMBER  = "#F59E0B"
-_GREEN  = "#10B981"
-_VIOLET = "#8B5CF6"
-_RED    = "#F43F5E"
-_ORANGE = "#FB923C"
-_MOON_C = "#C8CDD8"
-_EARTH_C= "#3B82F6"
-
-
-def _apply_dark_theme() -> None:
-    plt.rcParams.update({
-        "figure.facecolor":  _BG,
-        "axes.facecolor":    _PANEL,
-        "axes.edgecolor":    _BORDER,
-        "axes.labelcolor":   _TEXT,
-        "axes.titlecolor":   _TEXT,
-        "text.color":        _TEXT,
-        "xtick.color":       _TEXT,
-        "ytick.color":       _TEXT,
-        "grid.color":        _BORDER,
-        "grid.alpha":        1.0,
-        "grid.linestyle":    "--",
-        "lines.linewidth":   2.0,
-        "legend.facecolor":  _PANEL,
-        "legend.edgecolor":  _BORDER,
-        "legend.labelcolor": _TEXT,
-        "savefig.facecolor": _BG,
-        "savefig.edgecolor": _BG,
-        "font.size":         11,
-    })
+# ── SPICE / high-fidelity constants ─────────────────────────────────────────
+_REPO_ROOT        = Path(__file__).resolve().parent.parent
+_DEFAULT_KERNELS  = [
+    _REPO_ROOT / "data" / "kernels" / "naif0012.tls",
+    _REPO_ROOT / "data" / "kernels" / "de442s.bsp",
+]
+_EM_EPOCH         = "2026 APR 10 00:00:00 TDB"
+_GM_EARTH_KM3_S2  = 398_600.435_436   # km³/s²
+_GM_MOON_KM3_S2   =   4_902.800_066   # km³/s²
 
 
 def _ensure_dir(p: Path) -> None:
@@ -134,20 +122,33 @@ def run_case(
     tc_eff = float(t_meas[k_tc])
 
     x_hat = x0_nom + np.asarray(est_err, dtype=float).reshape(6)
-    P     = np.diag([1e-6] * 6).astype(float)
+    # Position σ ~ 1e-3 DU, velocity σ ~ 1e-3.5 DU/TU (velocity uncertainty
+    # is ~10× smaller than position in CR3BP dimensionless units).
+    P     = np.diag([1e-6, 1e-6, 1e-6, 1e-7, 1e-7, 1e-7]).astype(float)
     q_acc = 1e-14
 
-    x_hat_hist:  list[np.ndarray] = []
-    nis_list:    list[float]       = []
-    pos_err_list: list[float]      = []
-    P_diag_list: list[np.ndarray]  = []
-    valid_arr    = np.zeros(k_tc + 1, dtype=bool)
+    x_hat_hist:   list[np.ndarray] = []
+    nis_list:     list[float]      = []
+    nees_list:    list[float]      = []
+    innov_2d_list: list[np.ndarray] = []
+    pos_err_list:  list[float]     = []
+    P_diag_list:  list[np.ndarray] = []
+    valid_arr     = np.zeros(k_tc + 1, dtype=bool)
+
+    # Observability Gramian: W = Σ_k Φ(t_k,t_0)ᵀ Hₖᵀ Hₖ Φ(t_k,t_0)
+    # Accumulated over every accepted measurement. Eigenvectors of W reveal
+    # which state-space directions are (poorly) observable from bearing-only data.
+    Phi_cum          = np.eye(6, dtype=float)   # cumulative STM: Φ(t_k, t_0)
+    W_obs            = np.zeros((6, 6), dtype=float)
+    gramian_eig_hist: list[np.ndarray] = []     # eigenvalue snapshots, shape (k_tc, 6)
 
     for k in range(1, k_tc + 1):
-        x_hat, P, _ = ekf_propagate_cr3bp_stm(
+        x_hat, P, Phi_step = ekf_propagate_cr3bp_stm(
             mu=float(mu), x=x_hat, P=P,
             t0=float(t_meas[k - 1]), t1=float(t_meas[k]), q_acc=q_acc,
         )
+        # Φ(t_k, t_0) = Φ(t_k, t_{k-1}) · Φ(t_{k-1}, t_0)
+        Phi_cum = Phi_step @ Phi_cum
 
         r_sc_true = xs_true[k, :3]
         if camera_mode == "fixed":
@@ -176,21 +177,43 @@ def run_case(
                 )
                 if upd.accepted:
                     x_hat, P = upd.x_upd, upd.P_upd
+                    # Each accepted measurement contributes Φᵀ HᵀH Φ to the Gramian.
+                    W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
                 nis_list.append(float(upd.nis))
+                innov_2d_list.append(
+                    upd.final_innovation.copy()
+                    if upd.final_innovation is not None
+                    else upd.innovation.copy()
+                )
                 valid_arr[k] = True
             else:
                 nis_list.append(float("nan"))
+                innov_2d_list.append(np.full(2, np.nan))
         else:
             nis_list.append(float("nan"))
+            innov_2d_list.append(np.full(2, np.nan))
+
+        # NEES: (x̂ − x_true)ᵀ P⁻¹ (x̂ − x_true), chi²(6) distributed for a
+        # consistent filter.
+        err6 = x_hat - xs_true[k]
+        try:
+            nees_val = float(err6 @ np.linalg.solve(P, err6))
+        except np.linalg.LinAlgError:
+            nees_val = float("nan")
+        nees_list.append(nees_val)
 
         x_hat_hist.append(x_hat.copy())
         pos_err_list.append(_norm(x_hat[:3] - xs_true[k, :3]))
         P_diag_list.append(np.diag(P).copy())
+        gramian_eig_hist.append(np.linalg.eigvalsh(W_obs).copy())  # ascending
 
-    x_hat_arr   = np.asarray(x_hat_hist)
-    nis_arr     = np.asarray(nis_list)
-    pos_err_arr = np.asarray(pos_err_list)
-    P_diag_arr  = np.asarray(P_diag_list)
+    x_hat_arr    = np.asarray(x_hat_hist)
+    nis_arr      = np.asarray(nis_list)
+    nees_arr     = np.asarray(nees_list)
+    innov_2d_arr = np.asarray(innov_2d_list)   # shape (k_tc, 2)
+    pos_err_arr  = np.asarray(pos_err_list)
+    P_diag_arr   = np.asarray(P_diag_list)
+    gramian_eig_arr = np.asarray(gramian_eig_hist)  # shape (k_tc, 6), ascending λ
 
     x_true_tc    = xs_true[k_tc]
     x_hat_tc     = x_hat.copy()
@@ -200,6 +223,8 @@ def run_case(
     valid_rate   = float(np.mean(valid_arr[: k_tc + 1]))
     nis_finite   = nis_arr[np.isfinite(nis_arr)]
     nis_mean     = float(np.mean(nis_finite)) if nis_finite.size else float("nan")
+    nees_finite  = nees_arr[np.isfinite(nees_arr)]
+    nees_mean    = float(np.mean(nees_finite)) if nees_finite.size else float("nan")
 
     result_perf = solve_single_impulse_position_target(
         propagate=propagate, mu=float(mu), x0=x_true_tc,
@@ -252,15 +277,20 @@ def run_case(
         "tracePpos_tc":     tracePpos_tc,
         "valid_rate":       valid_rate,
         "nis_mean":         nis_mean,
+        "nees_mean":        nees_mean,
         "debug": {
-            "t_meas":       t_meas,
-            "k_tc":         k_tc,
-            "xs_nom":       res_nom.x,
-            "xs_true":      xs_true,
-            "x_hat_hist":   x_hat_arr,
-            "pos_err_hist": pos_err_arr,
-            "P_diag_hist":  P_diag_arr,
-            "nis_hist":     nis_arr,
+            "t_meas":        t_meas,
+            "k_tc":          k_tc,
+            "xs_nom":        res_nom.x,
+            "xs_true":       xs_true,
+            "x_hat_hist":    x_hat_arr,
+            "pos_err_hist":  pos_err_arr,
+            "P_diag_hist":   P_diag_arr,
+            "nis_hist":      nis_arr,
+            "nees_hist":     nees_arr,
+            "innov_2d_hist":    innov_2d_arr,
+            "W_obs":            W_obs,
+            "gramian_eig_hist": gramian_eig_arr,
             "xs_unc_tf":    res_unc.x,
             "xs_perf_tf":   res_perf.x,
             "xs_ekf_tf":    res_ekf.x,
@@ -269,6 +299,320 @@ def run_case(
             "r_target":     r_target,
         },
     }
+
+
+def run_case_spice(
+    mu: float,
+    t0: float,
+    tf: float,
+    tc: float,
+    dt_meas: float,
+    sigma_px: float,
+    dropout_prob: float,
+    seed: int,
+    dx0: np.ndarray,
+    est_err: np.ndarray,
+    *,
+    kernels=None,
+    epoch: str = _EM_EPOCH,
+    camera_mode: CameraMode = "estimate_tracking",
+    targets: tuple = ("SUN", "EARTH", "MOON"),
+) -> Dict[str, Any]:
+    """High-fidelity SPICE/JPL-ephemeris variant of run_case.
+
+    Accepts the same dimensionless CR3BP parameters as run_case and converts
+    them to km / km·s / seconds using the SPICE-derived Earth-Moon scale
+    factors at *epoch*.  Returns the same dict structure; miss/pos-error
+    quantities are in **km** (not dimensionless CR3BP units).
+    """
+    # Lazy imports — callers without spiceypy can still use run_case.
+    try:
+        from dynamics.spice_ephemeris import make_spice_point_mass_dynamics
+        from orbits.spice_bridge import (
+            earth_moon_synodic_frame_from_spice,
+            dimensional_synodic_to_spice_inertial_state,
+        )
+        from orbits.conversion import normalized_to_dimensional_state
+        from orbits.types import CR3BPSystemUnits
+    except ImportError as exc:
+        raise ImportError(
+            "run_case_spice requires 'spiceypy'. "
+            "Install with: pip install cislunar-optical-nav[high-fidelity]"
+        ) from exc
+
+    camera_mode = _resolve_camera_mode(camera_mode)
+    rng = np.random.default_rng(int(seed))
+
+    if kernels is None:
+        kernels = _DEFAULT_KERNELS
+    kernels = [Path(k) for k in kernels]
+
+    # ── SPICE dynamics setup ─────────────────────────────────────────────────
+    ephemeris, dynamics = make_spice_point_mass_dynamics(
+        kernels=kernels,
+        epoch=epoch,
+        targets=list(targets),
+    )
+    try:
+        # ── Dimensional scale factors from SPICE at epoch ────────────────────
+        r_earth_0  = ephemeris.position_km("EARTH", 0.0)
+        r_moon_0   = ephemeris.position_km("MOON",  0.0)
+        lunit_km   = float(np.linalg.norm(r_moon_0 - r_earth_0))
+        tunit_s    = float(np.sqrt(lunit_km ** 3 / (_GM_EARTH_KM3_S2 + _GM_MOON_KM3_S2)))
+        vunit_km_s = lunit_km / tunit_s
+
+        system = CR3BPSystemUnits(
+            name="earth-moon-spice",
+            mass_ratio=float(mu),
+            radius_secondary_km=1737.4,
+            lunit_km=lunit_km,
+            tunit_s=tunit_s,
+            libration_points={},
+        )
+
+        # ── Convert ND times → seconds ───────────────────────────────────────
+        t0_s  = float(t0)      * tunit_s
+        tf_s  = float(tf)      * tunit_s
+        tc_s  = float(tc)      * tunit_s
+        dtm_s = float(dt_meas) * tunit_s
+
+        # ── Nominal IC: CR3BP L1 halo seed → J2000 inertial km ──────────────
+        cr3bp_model   = CR3BP(mu=float(mu))
+        L1x           = cr3bp_model.lagrange_points()["L1"][0]
+        x0_nd         = np.array([L1x - 1e-3, 0.0, 0.0, 0.0, 0.05, 0.0], dtype=float)
+        synodic_frame = earth_moon_synodic_frame_from_spice(
+            ephemeris, t_s=t0_s, mass_ratio=float(mu)
+        )
+        state_dim = normalized_to_dimensional_state(x0_nd, system)
+        x0_nom = np.asarray(
+            dimensional_synodic_to_spice_inertial_state(state_dim, synodic_frame),
+            dtype=float,
+        )
+
+        # Scale injection / estimation errors from ND → km / km·s
+        dx0_km     = np.asarray(dx0,     dtype=float).reshape(6).copy()
+        est_err_km = np.asarray(est_err, dtype=float).reshape(6).copy()
+        dx0_km[:3]     *= lunit_km;   dx0_km[3:]     *= vunit_km_s
+        est_err_km[:3] *= lunit_km;   est_err_km[3:] *= vunit_km_s
+
+        x0_true = x0_nom + dx0_km
+
+        # ── Measurement time grid ────────────────────────────────────────────
+        t_meas_s = np.arange(t0_s, tf_s + 1e-6, dtm_s)
+        if t_meas_s[-1] < tf_s - dtm_s * 1e-3:
+            t_meas_s = np.append(t_meas_s, tf_s)
+
+        # ── Nominal propagation → r_target (J2000 km) ────────────────────────
+        res_nom = propagate(
+            dynamics.eom, (t0_s, tf_s), x0_nom,
+            t_eval=np.linspace(t0_s, tf_s, 2001),
+            rtol=1e-10, atol=1e-12,
+        )
+        if not res_nom.success:
+            raise RuntimeError(f"Nominal SPICE propagation failed: {res_nom.message}")
+        r_target = res_nom.x[-1, :3].copy()
+
+        # ── Truth propagation on measurement grid ─────────────────────────────
+        res_true = propagate(
+            dynamics.eom, (t0_s, tf_s), x0_true,
+            t_eval=t_meas_s, rtol=1e-10, atol=1e-12,
+        )
+        if not res_true.success:
+            raise RuntimeError(f"Truth SPICE propagation failed: {res_true.message}")
+        xs_true = res_true.x
+
+        intr, R_fixed = _make_camera()
+        k_tc   = _nearest_index(t_meas_s, tc_s)
+        tc_eff = float(t_meas_s[k_tc])
+
+        # ── Initial EKF state / covariance (ND σ scaled to km) ───────────────
+        x_hat = x0_nom + est_err_km
+        lsq   = lunit_km ** 2
+        vsq   = vunit_km_s ** 2
+        P     = np.diag([
+            1e-6 * lsq, 1e-6 * lsq, 1e-6 * lsq,
+            1e-7 * vsq, 1e-7 * vsq, 1e-7 * vsq,
+        ]).astype(float)
+        # Process-noise density in km²/s³ (proportionally converted from ND q_acc=1e-14)
+        q_acc = 1e-14 * lsq / tunit_s ** 3
+
+        # ── EKF loop ─────────────────────────────────────────────────────────
+        x_hat_hist:    list[np.ndarray] = []
+        nis_list:      list[float]      = []
+        nees_list:     list[float]      = []
+        innov_2d_list: list[np.ndarray] = []
+        pos_err_list:  list[float]      = []
+        P_diag_list:   list[np.ndarray] = []
+        valid_arr      = np.zeros(k_tc + 1, dtype=bool)
+        Phi_cum        = np.eye(6, dtype=float)
+        W_obs          = np.zeros((6, 6), dtype=float)
+        gramian_eig_hist: list[np.ndarray] = []
+
+        for k in range(1, k_tc + 1):
+            x_hat, P, Phi_step = ekf_propagate_stm(
+                dynamics=dynamics,
+                x=x_hat, P=P,
+                t0=float(t_meas_s[k - 1]), t1=float(t_meas_s[k]),
+                q_acc=q_acc, rtol=1e-10, atol=1e-12,
+            )
+            Phi_cum = Phi_step @ Phi_cum
+
+            # Moon J2000 position at this measurement step (km)
+            t_k    = float(t_meas_s[k])
+            r_body = ephemeris.position_km("MOON", t_k)
+            r_sc_true = xs_true[k, :3]
+
+            if camera_mode == "fixed":
+                R_cam = R_fixed
+            elif camera_mode == "truth_tracking":
+                R_cam = camera_dcm_from_boresight(r_body - r_sc_true,
+                                                  camera_forward_axis="+z")
+            else:
+                R_cam = camera_dcm_from_boresight(r_body - x_hat[:3],
+                                                  camera_forward_axis="+z")
+
+            meas = simulate_pixel_measurement(
+                r_sc=r_sc_true, r_body=r_body, intrinsics=intr,
+                R_cam_from_frame=R_cam, sigma_px=float(sigma_px),
+                rng=rng, t=t_k,
+                dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
+            )
+
+            if meas.valid and np.isfinite(meas.u_px):
+                u_g, sig_k = pixel_detection_to_bearing(
+                    meas.u_px, meas.v_px, float(sigma_px), intr, R_cam.T
+                )
+                if np.all(np.isfinite(u_g)):
+                    upd = bearing_update_tangent(x_hat, P, u_g, r_body, float(sig_k))
+                    if upd.accepted:
+                        x_hat, P = upd.x_upd, upd.P_upd
+                        W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
+                    nis_list.append(float(upd.nis))
+                    innov_2d_list.append(
+                        upd.final_innovation.copy()
+                        if upd.final_innovation is not None
+                        else upd.innovation.copy()
+                    )
+                    valid_arr[k] = True
+                else:
+                    nis_list.append(float("nan"))
+                    innov_2d_list.append(np.full(2, np.nan))
+            else:
+                nis_list.append(float("nan"))
+                innov_2d_list.append(np.full(2, np.nan))
+
+            err6 = x_hat - xs_true[k]
+            try:
+                nees_val = float(err6 @ np.linalg.solve(P, err6))
+            except np.linalg.LinAlgError:
+                nees_val = float("nan")
+            nees_list.append(nees_val)
+
+            x_hat_hist.append(x_hat.copy())
+            pos_err_list.append(_norm(x_hat[:3] - xs_true[k, :3]))
+            P_diag_list.append(np.diag(P).copy())
+            gramian_eig_hist.append(np.linalg.eigvalsh(W_obs).copy())
+
+        x_hat_arr       = np.asarray(x_hat_hist)
+        nis_arr         = np.asarray(nis_list)
+        nees_arr        = np.asarray(nees_list)
+        innov_2d_arr    = np.asarray(innov_2d_list)
+        pos_err_arr     = np.asarray(pos_err_list)
+        P_diag_arr      = np.asarray(P_diag_list)
+        gramian_eig_arr = np.asarray(gramian_eig_hist)
+
+        x_true_tc    = xs_true[k_tc]
+        x_hat_tc     = x_hat.copy()
+        P_tc         = P.copy()
+        pos_err_tc   = _norm(x_hat_tc[:3] - x_true_tc[:3])
+        tracePpos_tc = float(np.trace(P_tc[:3, :3]))
+        valid_rate   = float(np.mean(valid_arr[: k_tc + 1]))
+        nis_finite   = nis_arr[np.isfinite(nis_arr)]
+        nis_mean     = float(np.mean(nis_finite)) if nis_finite.size else float("nan")
+        nees_finite  = nees_arr[np.isfinite(nees_arr)]
+        nees_mean    = float(np.mean(nees_finite)) if nees_finite.size else float("nan")
+
+        # ── Targeting ──────────────────────────────────────────────────────────
+        result_perf = solve_single_impulse_position_target(
+            propagate=propagate, dynamics=dynamics, x0=x_true_tc,
+            t0=tc_eff, tc=tc_eff, tf=tf_s, r_target=r_target,
+        )
+        result_ekf = solve_single_impulse_position_target(
+            propagate=propagate, dynamics=dynamics, x0=x_hat_tc,
+            t0=tc_eff, tc=tc_eff, tf=tf_s, r_target=r_target,
+        )
+
+        dv_perf = np.asarray(result_perf.dv, dtype=float)
+        dv_ekf  = np.asarray(result_ekf.dv,  dtype=float)
+
+        t_post   = np.linspace(tc_eff, tf_s, 2001)
+        res_unc  = propagate(dynamics.eom, (tc_eff, tf_s), x_true_tc,
+                             t_eval=t_post, rtol=1e-10, atol=1e-12)
+        miss_unc = _norm(res_unc.x[-1, :3] - r_target)
+
+        x_perf0 = x_true_tc.copy(); x_perf0[3:6] += dv_perf
+        res_perf = propagate(dynamics.eom, (tc_eff, tf_s), x_perf0,
+                             t_eval=t_post, rtol=1e-10, atol=1e-12)
+        miss_perf = _norm(res_perf.x[-1, :3] - r_target)
+
+        x_ekf0 = x_true_tc.copy(); x_ekf0[3:6] += dv_ekf
+        res_ekf = propagate(dynamics.eom, (tc_eff, tf_s), x_ekf0,
+                            t_eval=t_post, rtol=1e-10, atol=1e-12)
+        miss_ekf = _norm(res_ekf.x[-1, :3] - r_target)
+
+        dv_perfect_mag = _norm(dv_perf)
+        dv_ekf_mag     = _norm(dv_ekf)
+        dv_delta_mag   = _norm(dv_ekf - dv_perf)
+
+        return {
+            "tc":             tc_eff,
+            "sigma_px":       float(sigma_px),
+            "dropout_prob":   float(dropout_prob),
+            "camera_mode":    camera_mode,
+            "units":          "km/km_s",
+            "lunit_km":       lunit_km,
+            "tunit_s":        tunit_s,
+            "dv_perfect_mag": dv_perfect_mag,    # km/s
+            "dv_ekf_mag":     dv_ekf_mag,         # km/s
+            "dv_delta_mag":   dv_delta_mag,       # km/s
+            "dv_inflation":   dv_ekf_mag - dv_perfect_mag,
+            "dv_inflation_pct": (
+                float("nan") if dv_perfect_mag == 0.0
+                else dv_ekf_mag / dv_perfect_mag - 1.0
+            ),
+            "miss_uncorrected": miss_unc,    # km
+            "miss_perfect":     miss_perf,   # km
+            "miss_ekf":         miss_ekf,    # km
+            "pos_err_tc":       pos_err_tc,  # km
+            "tracePpos_tc":     tracePpos_tc,
+            "valid_rate":       valid_rate,
+            "nis_mean":         nis_mean,
+            "nees_mean":        nees_mean,
+            "debug": {
+                "t_meas":           t_meas_s,
+                "k_tc":             k_tc,
+                "xs_nom":           res_nom.x,
+                "xs_true":          xs_true,
+                "x_hat_hist":       x_hat_arr,
+                "pos_err_hist":     pos_err_arr,
+                "P_diag_hist":      P_diag_arr,
+                "nis_hist":         nis_arr,
+                "nees_hist":        nees_arr,
+                "innov_2d_hist":    innov_2d_arr,
+                "W_obs":            W_obs,
+                "gramian_eig_hist": gramian_eig_arr,
+                "xs_unc_tf":        res_unc.x,
+                "xs_perf_tf":       res_perf.x,
+                "xs_ekf_tf":        res_ekf.x,
+                "dv_perf":          dv_perf,
+                "dv_ekf":           dv_ekf,
+                "r_target":         r_target,
+                "lunit_km":         lunit_km,
+                "tunit_s":          tunit_s,
+            },
+        }
+    finally:
+        ephemeris.close()
 
 
 def main() -> None:
@@ -289,14 +633,16 @@ def main() -> None:
     t_meas  = dbg["t_meas"]
     k_tc    = dbg["k_tc"]
     t_ekf   = t_meas[1: k_tc + 1]
-    t_nom   = np.linspace(t0, tf, len(dbg["xs_nom"]))
-    t_post  = np.linspace(float(t_meas[k_tc]), tf, len(dbg["xs_unc_tf"]))
     xs_nom  = dbg["xs_nom"]
     xs_true = dbg["xs_true"]
     x_hat   = dbg["x_hat_hist"]
     pos_err = dbg["pos_err_hist"]
     P_diag  = dbg["P_diag_hist"]
     nis     = dbg["nis_hist"]
+    nees         = dbg["nees_hist"]
+    innov2d      = dbg["innov_2d_hist"]
+    W_obs        = dbg["W_obs"]
+    gramian_eig  = dbg["gramian_eig_hist"]   # (k_tc, 6), ascending eigenvalues
     xs_unc  = dbg["xs_unc_tf"]
     xs_perf = dbg["xs_perf_tf"]
     xs_ekf  = dbg["xs_ekf_tf"]
@@ -304,10 +650,11 @@ def main() -> None:
     sig_pos = 3.0 * np.sqrt(np.abs(P_diag[:, 0]))
 
     print(f"  camera_mode   = {out['camera_mode']}")
-    print(f"  |dv| perfect  = {out['dv_perfect_mag']:.4e} ND")
-    print(f"  |dv| EKF      = {out['dv_ekf_mag']:.4e} ND")
-    print(f"  miss_ekf      = {out['miss_ekf']:.4e} ND")
-    print(f"  NIS mean      = {out['nis_mean']:.3f}")
+    print(f"  |dv| perfect  = {out['dv_perfect_mag']:.4e} dimensionless CR3BP velocity")
+    print(f"  |dv| EKF      = {out['dv_ekf_mag']:.4e} dimensionless CR3BP velocity")
+    print(f"  miss_ekf      = {out['miss_ekf']:.4e} dimensionless CR3BP length")
+    print(f"  NIS mean      = {out['nis_mean']:.3f}  (expected ≈ 2 for consistent 2-D bearing)")
+    print(f"  NEES mean     = {out['nees_mean']:.3f}  (expected ≈ 6 for consistent 6-D state)")
     print(f"  valid_rate    = {out['valid_rate']:.3f}")
 
     def _ax_style(ax: plt.Axes) -> None:
@@ -335,8 +682,8 @@ def main() -> None:
     ax.scatter([r_tgt[0]],            [r_tgt[1]],            s=90, marker="*", c=_AMBER, zorder=6, label="target")
     ax.scatter([xs_true[k_tc, 0]],    [xs_true[k_tc, 1]],    s=70, c=_RED,    zorder=6, label="tc")
     ax.set_title(f"XY Trajectory  [{out['camera_mode']}]", color=_TEXT)
-    ax.set_xlabel("x  [ND]", color=_TEXT)
-    ax.set_ylabel("y  [ND]", color=_TEXT)
+    ax.set_xlabel("x  [dimensionless CR3BP length]", color=_TEXT)
+    ax.set_ylabel("y  [dimensionless CR3BP length]", color=_TEXT)
     ax.legend(fontsize=8)
 
     ax = fig.add_subplot(gs[0, 1])
@@ -348,8 +695,8 @@ def main() -> None:
                 color=_AMBER, lw=1.5, ls="--", label="‖v̂ − v‖", alpha=0.85)
     ax.axvline(tc, color=_RED, lw=0.9, ls="--", alpha=0.6)
     ax.set_title("EKF State Errors (to tc)", color=_TEXT)
-    ax.set_xlabel("t  [ND]", color=_TEXT)
-    ax.set_ylabel("Error  [ND]", color=_TEXT)
+    ax.set_xlabel("t  [dimensionless CR3BP time]", color=_TEXT)
+    ax.set_ylabel("Error  [dimensionless CR3BP units]", color=_TEXT)
     ax.legend(fontsize=9)
 
     ax = fig.add_subplot(gs[1, 0])
@@ -369,7 +716,7 @@ def main() -> None:
         f"NIS  (mean = {out['nis_mean']:.2f},  valid = {out['valid_rate']:.2f})",
         color=_TEXT,
     )
-    ax.set_xlabel("t  [ND]", color=_TEXT)
+    ax.set_xlabel("t  [dimensionless CR3BP time]", color=_TEXT)
     ax.set_ylabel("NIS", color=_TEXT)
     ax.legend(fontsize=9)
 
@@ -384,7 +731,7 @@ def main() -> None:
                 val + max(miss_vals) * 0.02,
                 f"{val:.2e}", ha="center", va="bottom", color=_TEXT, fontsize=9)
     ax.set_title("Terminal Miss Distance  ‖r(tf) − r_target‖", color=_TEXT)
-    ax.set_ylabel("Miss distance  [ND]", color=_TEXT)
+    ax.set_ylabel("Miss distance  [dimensionless CR3BP length]", color=_TEXT)
     ax.grid(True, axis="y")
 
     fig.suptitle(
@@ -408,7 +755,7 @@ def main() -> None:
         ax.text(bar.get_x() + bar.get_width() / 2, val + max(vals) * 0.02,
                 f"{val:.3e}", ha="center", va="bottom", color=_TEXT, fontsize=10)
     ax.set_title("Burn Magnitude Comparison", color=_TEXT, fontsize=12)
-    ax.set_ylabel("Δv  [ND]", color=_TEXT)
+    ax.set_ylabel("Δv  [dimensionless CR3BP velocity]", color=_TEXT)
     ax.grid(True, axis="y")
     infl = out["dv_inflation_pct"]
     if np.isfinite(infl):
@@ -419,9 +766,307 @@ def main() -> None:
     fig.savefig(plots_dir / "06_dv_compare.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
 
+    # ── Figure 3: Filter consistency diagnostics ─────────────────────────────
+    fig3 = plt.figure(figsize=(14, 9))
+    gs3  = gridspec.GridSpec(2, 2, figure=fig3,
+                             left=0.07, right=0.97, top=0.93, bottom=0.09,
+                             wspace=0.30, hspace=0.42)
+
+    # --- [0,0] NEES vs time (chi²(6) 95% CI) --------------------------------
+    ax_nees = fig3.add_subplot(gs3[0, 0])
+    _ax_style(ax_nees)
+    nees_lo = chi2.ppf(0.025, df=6)
+    nees_hi = chi2.ppf(0.975, df=6)
+    ax_nees.fill_between(t_ekf, nees_lo, nees_hi, color=_GREEN, alpha=0.10,
+                         label=f"95% χ²(6): [{nees_lo:.1f}, {nees_hi:.1f}]")
+    ax_nees.axhline(6.0, color=_GREEN, lw=0.8, ls="--", alpha=0.5)
+    nees_ok  = np.isfinite(nees)
+    nees_inb = nees_ok & (nees >= nees_lo) & (nees <= nees_hi)
+    nees_out = nees_ok & ~nees_inb
+    ax_nees.scatter(t_ekf[nees_inb], nees[nees_inb], s=12, c=_GREEN, zorder=4)
+    ax_nees.scatter(t_ekf[nees_out], nees[nees_out], s=12, c=_RED,   zorder=4)
+    ax_nees.set_ylim(0, max(30.0, float(np.nanpercentile(nees, 99)) * 1.2))
+    ax_nees.set_title(
+        f"NEES  (mean={out['nees_mean']:.2f}, expected≈6)",
+        color=_TEXT,
+    )
+    ax_nees.set_xlabel("t  [dimensionless CR3BP time]", color=_TEXT)
+    ax_nees.set_ylabel("NEES", color=_TEXT)
+    ax_nees.legend(fontsize=8)
+
+    # --- [0,1] Covariance trace vs time --------------------------------------
+    ax_cov = fig3.add_subplot(gs3[0, 1])
+    _ax_style(ax_cov)
+    tr_pos = P_diag[:, 0] + P_diag[:, 1] + P_diag[:, 2]
+    tr_vel = P_diag[:, 3] + P_diag[:, 4] + P_diag[:, 5]
+    tr_all = tr_pos + tr_vel
+    ax_cov.semilogy(t_ekf, tr_pos + 1e-20, color=_CYAN,   lw=1.8, label="tr(P_pos)")
+    ax_cov.semilogy(t_ekf, tr_vel + 1e-20, color=_AMBER,  lw=1.5, ls="--", label="tr(P_vel)")
+    ax_cov.semilogy(t_ekf, tr_all + 1e-20, color=_VIOLET, lw=1.2, ls=":",  label="tr(P_full)", alpha=0.7)
+    ax_cov.axvline(tc, color=_RED, lw=0.9, ls="--", alpha=0.6)
+    ax_cov.set_title("Covariance Trace vs Time", color=_TEXT)
+    ax_cov.set_xlabel("t  [dimensionless CR3BP time]", color=_TEXT)
+    ax_cov.set_ylabel("tr(P)  [dimensionless CR3BP²]", color=_TEXT)
+    ax_cov.legend(fontsize=9)
+
+    # --- [1,0] Innovation ACF (whiteness test) --------------------------------
+    ax_acf = fig3.add_subplot(gs3[1, 0])
+    _ax_style(ax_acf)
+    max_lag = min(30, len(innov2d) // 4)
+    for comp_idx, (comp_color, comp_label) in enumerate(
+        [(_CYAN, "innov[0]"), (_AMBER, "innov[1]")]
+    ):
+        vals_c = innov2d[:, comp_idx]
+        valid_c = vals_c[np.isfinite(vals_c)]
+        if valid_c.size < 4:
+            continue
+        vm = valid_c - valid_c.mean()
+        var = float(np.dot(vm, vm))
+        if var == 0.0:
+            continue
+        acf_lags = np.arange(0, max_lag + 1)
+        acf_vals = np.array([
+            float(np.dot(vm[:len(vm) - lag], vm[lag:])) / var
+            if lag < len(vm) else 0.0
+            for lag in acf_lags
+        ])
+        markerline, stemlines, _ = ax_acf.stem(
+            acf_lags, acf_vals,
+            linefmt=comp_color, markerfmt=f"o",
+            basefmt=" ",
+            label=comp_label,
+        )
+        markerline.set_color(comp_color)
+        markerline.set_markersize(4)
+        plt.setp(stemlines, color=comp_color, linewidth=1.0, alpha=0.7)
+    # 95% confidence bounds for white noise: ±1.96/√N
+    n_valid = int(np.sum(np.isfinite(innov2d[:, 0])))
+    if n_valid > 0:
+        ci_bound = 1.96 / np.sqrt(max(n_valid, 1))
+        ax_acf.axhline( ci_bound, color=_GREEN, lw=1.0, ls="--", alpha=0.7, label=f"95% CI (±{ci_bound:.2f})")
+        ax_acf.axhline(-ci_bound, color=_GREEN, lw=1.0, ls="--", alpha=0.7)
+    ax_acf.axhline(0, color=_TEXT, lw=0.5, alpha=0.3)
+    ax_acf.set_title("Innovation ACF  (whiteness test)", color=_TEXT)
+    ax_acf.set_xlabel("Lag  [measurement steps]", color=_TEXT)
+    ax_acf.set_ylabel("Autocorrelation", color=_TEXT)
+    ax_acf.set_ylim(-1.1, 1.1)
+    ax_acf.legend(fontsize=9)
+
+    # --- [1,1] Measurement validity indicator --------------------------------
+    ax_val = fig3.add_subplot(gs3[1, 1])
+    _ax_style(ax_val)
+    valid_mask = np.isfinite(nis)
+    ax_val.bar(t_ekf[valid_mask],  np.ones(valid_mask.sum()),
+               width=(t_ekf[1] - t_ekf[0]) * 0.9,
+               color=_GREEN,  alpha=0.8, label="accepted")
+    ax_val.bar(t_ekf[~valid_mask], np.ones((~valid_mask).sum()),
+               width=(t_ekf[1] - t_ekf[0]) * 0.9,
+               color=_RED,    alpha=0.6, label="dropped/invalid")
+    ax_val.axvline(tc, color=_AMBER, lw=0.9, ls="--", alpha=0.6)
+    ax_val.set_ylim(0, 1.5)
+    ax_val.set_yticks([])
+    ax_val.set_title(
+        f"Measurement Validity  (accept rate = {out['valid_rate']:.2f})",
+        color=_TEXT,
+    )
+    ax_val.set_xlabel("t  [dimensionless CR3BP time]", color=_TEXT)
+    ax_val.legend(fontsize=9)
+
+    fig3.suptitle(
+        f"Filter Consistency Diagnostics  [{out['camera_mode']}]",
+        color=_TEXT, fontsize=13, y=0.98,
+    )
+    fig3.patch.set_facecolor(_BG)
+    fig3.savefig(plots_dir / "06_diagnostics.png", dpi=200, bbox_inches="tight")
+    plt.close(fig3)
+
+    # ── Figure 4: Observability analysis ─────────────────────────────────────
+    eigvals_final, eigvecs_final = np.linalg.eigh(W_obs)  # ascending order
+    cond_num = float(eigvals_final[-1]) / max(float(eigvals_final[0]), 1e-30)
+
+    fig4 = plt.figure(figsize=(14, 9))
+    gs4  = gridspec.GridSpec(2, 2, figure=fig4,
+                             left=0.07, right=0.97, top=0.93, bottom=0.09,
+                             wspace=0.32, hspace=0.45)
+
+    # --- [0,0] Final eigenvalue spectrum: reveals separation between
+    #           observable (large λ) and unobservable (small λ) directions. ----
+    ax_eig = fig4.add_subplot(gs4[0, 0])
+    _ax_style(ax_eig)
+    eig_labels = [f"λ{i+1}" for i in range(6)]
+    eig_max    = float(max(eigvals_final.max(), 1e-30))
+    eig_colors = [
+        _RED   if v < eig_max * 1e-4 else
+        _AMBER if v < eig_max * 1e-2 else
+        _GREEN
+        for v in eigvals_final
+    ]
+    ax_eig.bar(
+        eig_labels,
+        np.maximum(eigvals_final, 1e-30),
+        color=eig_colors,
+        edgecolor=_BORDER,
+        lw=0.8,
+    )
+    ax_eig.set_yscale("log")
+    ax_eig.set_title(
+        f"Gramian Eigenvalue Spectrum  (cond = {cond_num:.2e})",
+        color=_TEXT,
+    )
+    ax_eig.set_xlabel("Eigenvalue index  (λ₁ = least observable)", color=_TEXT)
+    ax_eig.set_ylabel("λ  [dimensionless]", color=_TEXT)
+    ax_eig.text(
+        0.97, 0.03,
+        f"λ_min = {eigvals_final[0]:.2e}\nλ_max = {eigvals_final[-1]:.2e}",
+        transform=ax_eig.transAxes, ha="right", va="bottom",
+        color=_TEXT, fontsize=8.5,
+        bbox=dict(facecolor=_BG, edgecolor=_BORDER, pad=4),
+    )
+
+    # --- [0,1] Eigenvalue growth over the observation arc --------------------
+    ax_evo = fig4.add_subplot(gs4[0, 1])
+    _ax_style(ax_evo)
+    evo_colors = [_RED, _AMBER, _ORANGE, _VIOLET, _CYAN, _GREEN]
+    evo_styles = ["-", "--", ":", "-.", (0,(3,1)), (0,(5,2))]
+    for i in range(6):
+        eig_i = gramian_eig[:, i]
+        pos_mask = eig_i > 0
+        if pos_mask.sum() > 1:
+            ax_evo.semilogy(
+                t_ekf[pos_mask], eig_i[pos_mask],
+                color=evo_colors[i], lw=1.8 if i in (0, 5) else 1.1,
+                ls=evo_styles[i],
+                alpha=1.0 if i in (0, 5) else 0.65,
+                label=f"λ{i+1}",
+            )
+    ax_evo.axvline(tc, color=_RED, lw=0.9, ls="--", alpha=0.6)
+    ax_evo.set_title("Gramian Eigenvalue Growth  (log scale)", color=_TEXT)
+    ax_evo.set_xlabel("t  [dimensionless CR3BP time]", color=_TEXT)
+    ax_evo.set_ylabel("λ  [dimensionless]", color=_TEXT)
+    ax_evo.legend(fontsize=8, ncol=2)
+
+    # --- [1,0] XY trajectory + unobservable direction arrow ------------------
+    # The eigenvector for λ_min is the state-space direction bearing-only
+    # measurements can barely distinguish.  Its position projection (first 2
+    # components) shows the spatial direction of poor observability.
+    ax_dir = fig4.add_subplot(gs4[1, 0])
+    _ax_style(ax_dir)
+    model_dir = CR3BP(mu=mu)
+    ax_dir.scatter([model_dir.primary1[0]], [model_dir.primary1[1]],
+                   s=80, c=_EARTH_C, zorder=5, label="Earth")
+    ax_dir.scatter([model_dir.primary2[0]], [model_dir.primary2[1]],
+                   s=55, c=_MOON_C, zorder=5, label="Moon")
+    ax_dir.plot(xs_true[:k_tc+1, 0], xs_true[:k_tc+1, 1],
+                color=_AMBER, lw=1.4, ls="--", alpha=0.85, label="truth arc")
+
+    unobs_pos_xy = eigvecs_final[:2, 0]
+    pos_norm = float(np.linalg.norm(unobs_pos_xy))
+    if pos_norm > 1e-12:
+        unobs_xy  = unobs_pos_xy / pos_norm
+        traj_span = max(float(np.ptp(xs_true[:k_tc+1, 0])),
+                        float(np.ptp(xs_true[:k_tc+1, 1])), 1e-10)
+        arrow_len = 0.07 * traj_span
+        mid_k = k_tc // 2
+        ax0, ay0 = float(xs_true[mid_k, 0]), float(xs_true[mid_k, 1])
+        ax_dir.annotate(
+            "",
+            xy=(ax0 + unobs_xy[0] * arrow_len, ay0 + unobs_xy[1] * arrow_len),
+            xytext=(ax0 - unobs_xy[0] * arrow_len, ay0 - unobs_xy[1] * arrow_len),
+            arrowprops=dict(arrowstyle="<->", color=_RED, lw=2.2),
+        )
+        ax_dir.text(
+            ax0 + unobs_xy[0] * arrow_len * 1.25,
+            ay0 + unobs_xy[1] * arrow_len * 1.25,
+            f"least obs.\n({unobs_xy[0]:+.2f}, {unobs_xy[1]:+.2f})",
+            color=_RED, fontsize=8, ha="center", va="center",
+        )
+
+    ax_dir.set_aspect("equal", adjustable="box")
+    ax_dir.set_title(
+        "Unobservable Direction  (λ_min eigvec, position projection)",
+        color=_TEXT,
+    )
+    ax_dir.set_xlabel("x  [dimensionless CR3BP length]", color=_TEXT)
+    ax_dir.set_ylabel("y  [dimensionless CR3BP length]", color=_TEXT)
+    ax_dir.legend(fontsize=8)
+
+    # --- [1,1] Rolling acceptance rate per arc --------------------------------
+    # Smoothed over a sliding window so you can see how gate acceptance varies
+    # along the arc — e.g. degrading near apoapsis or dropout zones.
+    ax_roll = fig4.add_subplot(gs4[1, 1])
+    _ax_style(ax_roll)
+    valid_step = np.isfinite(nis).astype(float)
+    win        = max(5, len(valid_step) // 10)
+    kernel     = np.ones(win) / win
+    rolling_rate = np.convolve(valid_step, kernel, mode="same")
+    ax_roll.fill_between(t_ekf, 0, valid_step,
+                         color=_GREEN, alpha=0.12, step="mid", label="per-step accept")
+    ax_roll.plot(t_ekf, rolling_rate, color=_CYAN, lw=2.0,
+                 label=f"rolling mean  (win = {win} steps)")
+    ax_roll.axhline(float(np.mean(valid_step)), color=_AMBER, lw=1.2, ls="--",
+                    label=f"arc mean = {float(np.mean(valid_step)):.2f}")
+    ax_roll.axvline(tc, color=_RED, lw=0.9, ls="--", alpha=0.6)
+    ax_roll.set_ylim(-0.05, 1.12)
+    ax_roll.set_title(
+        f"Rolling Acceptance Rate per Arc  (win = {win} steps ≈ 10%)",
+        color=_TEXT,
+    )
+    ax_roll.set_xlabel("t  [dimensionless CR3BP time]", color=_TEXT)
+    ax_roll.set_ylabel("acceptance fraction", color=_TEXT)
+    ax_roll.legend(fontsize=9)
+
+    fig4.suptitle(
+        f"Observability Analysis  [{out['camera_mode']}]",
+        color=_TEXT, fontsize=13, y=0.98,
+    )
+    fig4.patch.set_facecolor(_BG)
+    fig4.savefig(plots_dir / "06_observability.png", dpi=200, bbox_inches="tight")
+    plt.close(fig4)
+
     print("Wrote:")
     print(f"  {plots_dir / '06_midcourse_report.png'}")
     print(f"  {plots_dir / '06_dv_compare.png'}")
+    print(f"  {plots_dir / '06_diagnostics.png'}")
+    print(f"  {plots_dir / '06_observability.png'}")
+
+    # ── SPICE / high-fidelity comparison ─────────────────────────────────────
+    kernels_present = all(Path(k).exists() for k in _DEFAULT_KERNELS)
+    if not kernels_present:
+        missing = [str(k) for k in _DEFAULT_KERNELS if not Path(k).exists()]
+        print(f"\n[SPICE] skipped — kernel files not found:\n  " + "\n  ".join(missing))
+        return
+
+    print("\nRunning 06 SPICE/JPL high-fidelity midcourse EKF correction ...")
+    out_s = run_case_spice(
+        mu, t0, tf, tc, dt_meas, sigma_px, dropout_prob, seed,
+        dx0, est_err, camera_mode="estimate_tracking",
+    )
+    lu = out_s["lunit_km"]
+    tu = out_s["tunit_s"]
+    vu = lu / tu   # km/s per ND velocity unit
+
+    print(f"  lunit = {lu:.1f} km   tunit = {tu/86400:.4f} days   vunit = {vu*1000:.3f} m/s")
+    print()
+    print(f"  {'Metric':<26}  {'CR3BP (ND)':<18}  {'SPICE (phys)'}")
+    print(f"  {'-'*26}  {'-'*18}  {'-'*28}")
+    print(f"  {'|dv| perfect':<26}  {out['dv_perfect_mag']:.4e} ND       "
+          f"{out_s['dv_perfect_mag']*1000:.4f} m/s")
+    print(f"  {'|dv| EKF':<26}  {out['dv_ekf_mag']:.4e} ND       "
+          f"{out_s['dv_ekf_mag']*1000:.4f} m/s")
+    print(f"  {'miss uncorrected':<26}  {out['miss_uncorrected']:.4e} ND       "
+          f"{out_s['miss_uncorrected']:.3f} km")
+    print(f"  {'miss perfect Δv':<26}  {out['miss_perfect']:.4e} ND       "
+          f"{out_s['miss_perfect']:.3f} km")
+    print(f"  {'miss EKF Δv':<26}  {out['miss_ekf']:.4e} ND       "
+          f"{out_s['miss_ekf']:.3f} km")
+    print(f"  {'pos err at tc':<26}  {out['pos_err_tc']:.4e} ND       "
+          f"{out_s['pos_err_tc']:.3f} km")
+    print(f"  {'NIS mean (expect≈2)':<26}  {out['nis_mean']:.3f}              "
+          f"{out_s['nis_mean']:.3f}")
+    print(f"  {'NEES mean (expect≈6)':<26}  {out['nees_mean']:.3f}              "
+          f"{out_s['nees_mean']:.3f}")
+    print(f"  {'valid rate':<26}  {out['valid_rate']:.3f}              "
+          f"{out_s['valid_rate']:.3f}")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from _common import ensure_src_on_path
+
+ensure_src_on_path()
+
 import numpy as np
 
 from diagnostics.config import (
@@ -302,8 +306,8 @@ def print_console_summary(suite_results: dict[str, dict[str, Any]]) -> None:
         print(f"  nis_mean          = {s.nis_mean:.4e}")
         print(f"  nees_minus_mean   = {s.nees_minus_mean:.4e}")
         print(f"  nees_plus_mean    = {s.nees_plus_mean:.4e}")
-        print(f"  final_pos_err     = {s.final_pos_err:.4e} ND")
-        print(f"  final_vel_err     = {s.final_vel_err:.4e} ND")
+        print(f"  final_pos_err     = {s.final_pos_err:.4e} dimensionless CR3BP length")
+        print(f"  final_vel_err     = {s.final_vel_err:.4e} dimensionless CR3BP velocity")
         print(f"  final_los_angle   = {s.final_los_angle:.4e} rad")
         print(f"  failed_hypotheses = {len(failed)}")
         if failed:

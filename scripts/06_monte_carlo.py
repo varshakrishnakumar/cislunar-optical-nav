@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import sys
-import traceback
-from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+from _analysis_common import load_midcourse_run_case
 
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
-from matplotlib.patches import FancyBboxPatch
+
+from _common import ensure_src_on_path, repo_path
 
 
 _BG     = "#080B14"
@@ -28,6 +28,8 @@ _PINK   = "#EC4899"
 
 _CMAP_CYAN   = mcolors.LinearSegmentedColormap.from_list("cy",   [_PANEL, _CYAN])
 _CMAP_VIOLET = mcolors.LinearSegmentedColormap.from_list("viol", [_PANEL, _VIOLET])
+_CMAP_GREEN  = mcolors.LinearSegmentedColormap.from_list("green", [_PANEL, _GREEN])
+_CMAP_AMBER  = mcolors.LinearSegmentedColormap.from_list("amber", [_PANEL, _AMBER])
 _CMAP_HOT    = mcolors.LinearSegmentedColormap.from_list("hot",  [_CYAN, _VIOLET, _PINK])
 
 
@@ -73,33 +75,6 @@ def _resolve_study(name: str) -> str:
         available = list(_STUDY_PRESETS.keys())
         raise ValueError(f"Unknown study '{name}'. Available: {available}")
     return key
-
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-def _ensure_paths(repo_root: Path) -> None:
-    for p in [repo_root, repo_root / "src"]:
-        s = str(p)
-        if s not in sys.path:
-            sys.path.insert(0, s)
-
-
-def _load_run_case(repo_root: Path) -> Callable[..., Any]:
-    target = repo_root / "scripts" / "06_midcourse_ekf_correction.py"
-    if not target.exists():
-        raise FileNotFoundError(f"Could not find EKF script at: {target}")
-    spec = importlib.util.spec_from_file_location("midcourse06a", target)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not create import spec for: {target}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    if not hasattr(mod, "run_case"):
-        raise AttributeError("06_midcourse_ekf_correction.py does not define run_case()")
-    return getattr(mod, "run_case")
-
 
 
 def _build_config(args: argparse.Namespace) -> Any:
@@ -215,6 +190,7 @@ def _plot_hist(
     outpath: Path,
     color: str = _CYAN,
     tol: Optional[float] = None,
+    xmin_zero: bool = True,
 ) -> None:
     outpath.parent.mkdir(parents=True, exist_ok=True)
     vals = vals[np.isfinite(vals)]
@@ -237,7 +213,12 @@ def _plot_hist(
     )
 
     max_c = counts.max() or 1
-    cmap  = _CMAP_CYAN if color == _CYAN else _CMAP_VIOLET
+    cmap = {
+        _CYAN: _CMAP_CYAN,
+        _VIOLET: _CMAP_VIOLET,
+        _GREEN: _CMAP_GREEN,
+        _AMBER: _CMAP_AMBER,
+    }.get(color, _CMAP_VIOLET)
     for patch, count in zip(patches, counts):
         patch.set_facecolor(cmap(0.35 + 0.65 * count / max_c))
         patch.set_alpha(0.92)
@@ -268,12 +249,16 @@ def _plot_hist(
     if tol is not None:
         sr = float(np.mean(vals < tol))
         lines.append(f"P<tol = {sr:.1%}")
-    _stats_box(ax, lines)
+    # Place the stats box in the corner with less data mass to avoid overlap.
+    mid = float(vals.min() + vals.max()) / 2.0
+    stats_loc = "upper left" if mu_v > mid else "upper right"
+    _stats_box(ax, lines, loc=stats_loc)
 
     ax.set_xlabel(xlabel, color=_TEXT, labelpad=6)
     ax.set_ylabel("count", color=_TEXT, labelpad=6)
     ax.set_title(title, color=_TEXT, pad=10, fontweight="bold")
-    ax.set_xlim(left=max(0, edges[0]))
+    if xmin_zero:
+        ax.set_xlim(left=max(0, edges[0]))
 
     fig.tight_layout()
     fig.savefig(outpath, dpi=200, facecolor=_BG)
@@ -324,7 +309,7 @@ def _plot_scatter(
     cbar.set_label("local density", color=_DIM, fontsize=8)
     plt.setp(cbar.ax.yaxis.get_ticklabels(), color=_DIM, fontsize=7)
 
-    if xm.size > 2:
+    if xm.size > 2 and np.ptp(xm) > 0.0 and np.ptp(ym) > 0.0:
         coeffs = np.polyfit(xm, ym, 1)
         xfit   = np.linspace(xm.min(), xm.max(), 200)
         yfit   = np.polyval(coeffs, xfit)
@@ -349,6 +334,62 @@ def _plot_scatter(
     plt.close(fig)
 
 
+def _plot_representative_orbit(
+    out: Dict[str, Any],
+    *,
+    mu: float,
+    trial_id: int,
+    outpath: Path,
+) -> None:
+    outpath.parent.mkdir(parents=True, exist_ok=True)
+    dbg = out["debug"]
+    xs_nom = np.asarray(dbg["xs_nom"], dtype=float)
+    xs_true = np.asarray(dbg["xs_true"], dtype=float)
+    xs_unc = np.asarray(dbg["xs_unc_tf"], dtype=float)
+    xs_perf = np.asarray(dbg["xs_perf_tf"], dtype=float)
+    xs_ekf = np.asarray(dbg["xs_ekf_tf"], dtype=float)
+    r_target = np.asarray(dbg["r_target"], dtype=float)
+    k_tc = int(dbg["k_tc"])
+
+    earth = np.array([-float(mu), 0.0])
+    moon = np.array([1.0 - float(mu), 0.0])
+
+    fig, ax = plt.subplots(figsize=(13, 5.2), layout="constrained")
+    fig.patch.set_facecolor(_BG)
+    _style_ax(ax)
+
+    ax.scatter([earth[0]], [earth[1]], s=110, color="#3B82F6", edgecolors=_BG, zorder=5, label="Earth")
+    ax.scatter([moon[0]], [moon[1]], s=75, color="#C8CDD8", edgecolors=_BG, zorder=5, label="Moon")
+    ax.plot(xs_nom[:, 0], xs_nom[:, 1], color=_CYAN, lw=1.4, alpha=0.72, label="nominal target arc")
+    ax.plot(xs_true[:, 0], xs_true[:, 1], color=_AMBER, lw=1.3, ls="--", alpha=0.85, label="truth before burn")
+    ax.plot(xs_unc[:, 0], xs_unc[:, 1], color=_AMBER, lw=1.1, ls=":", alpha=0.65, label="uncorrected after tc")
+    ax.plot(xs_perf[:, 0], xs_perf[:, 1], color=_GREEN, lw=1.7, label="perfect-info burn")
+    ax.plot(xs_ekf[:, 0], xs_ekf[:, 1], color=_VIOLET, lw=1.7, ls=(0, (5, 3)), label="IEKF burn")
+    ax.scatter([r_target[0]], [r_target[1]], s=120, color=_AMBER, marker="*", edgecolors=_BG, zorder=8, label="target")
+    if 0 <= k_tc < len(xs_true):
+        ax.scatter([xs_true[k_tc, 0]], [xs_true[k_tc, 1]], s=85, color=_RED, marker="D", edgecolors=_BG, zorder=7, label="correction time")
+
+    _stats_box(
+        ax,
+        [
+            f"trial = {trial_id}",
+            f"miss_IEKF = {float(out['miss_ekf']):.3e}",
+            f"valid rate = {float(out['valid_rate']):.2f}",
+            f"mean NIS = {float(out['nis_mean']):.2f}",
+        ],
+        loc="upper left",
+    )
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlim(-0.1, 1.15)
+    ax.set_ylim(-0.2, 0.2)
+    ax.set_xlabel("x [dimensionless CR3BP length]", color=_TEXT, labelpad=6)
+    ax.set_ylabel("y [dimensionless CR3BP length]", color=_TEXT, labelpad=8)
+    ax.set_title("Representative Monte Carlo Trial Orbit and Correction", color=_TEXT, pad=12, fontweight="bold")
+    ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
+    fig.savefig(outpath, dpi=220, facecolor=_BG)
+    plt.close(fig)
+
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -363,6 +404,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Miss tolerance for success-rate annotation.")
     p.add_argument("--no-plot-d",    action="store_true",
                    help="Skip Plot D (tr(P_pos) vs miss).")
+    p.add_argument("--representative-trial-id", type=int, default=0,
+                   help="Replay this trial and save an orbit-level report plot; set negative to skip.")
 
     p.add_argument("--mu",           type=float, default=0.0121505856)
     p.add_argument("--t0",           type=float, default=0.0)
@@ -380,14 +423,14 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     _apply_dark_theme()
-    args = p = _parse_args()
+    args = _parse_args()
 
-    repo_root = _repo_root()
-    _ensure_paths(repo_root)
+    ensure_src_on_path()
 
     from mc import run_monte_carlo, save_results_csv, summarize_results
+    from mc.sampler import make_trial_rng, sample_estimation_error, sample_injection_error
 
-    run_case = _load_run_case(repo_root)
+    run_case = load_midcourse_run_case()
     config   = _build_config(args)
 
     cam = getattr(config, "camera_mode",
@@ -406,7 +449,7 @@ def main() -> None:
         print("ERROR: no trials completed — check run_case() and config.", file=sys.stderr)
         sys.exit(1)
 
-    plots_dir = Path(args.plots_dir)
+    plots_dir = repo_path(args.plots_dir)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = plots_dir / f"06c_{config.study_name}_results.csv"
@@ -424,16 +467,25 @@ def main() -> None:
 
     dv_delta     = _arr("dv_delta_mag")
     dv_infl      = _arr("dv_inflation")
+    dv_infl_pct  = _arr("dv_inflation_pct") * 100.0
     miss_ekf     = _arr("miss_ekf")
     pos_err_tc   = _arr("pos_err_tc")
     tracePpos_tc = _arr("tracePpos_tc")
+    nis_mean     = _arr("nis_mean")
+    valid_rate   = _arr("valid_rate")
 
     summary = summarize_results(results, tol=float(args.tol))
     n       = len(results)
 
+    def _summary_stat(metric: str, stat: str) -> float:
+        block = summary.get(metric, {})
+        if not isinstance(block, dict):
+            return float("nan")
+        return float(block.get(stat, float("nan")))
+
     _plot_hist(
         dv_delta,
-        xlabel="‖Δv_ekf − Δv_perfect‖  [ND]",
+        xlabel="‖Δv_ekf − Δv_perfect‖  [dimensionless CR3BP velocity]",
         title=f"Burn Error Magnitude  ·  {config.study_name}  (n={n})",
         outpath=plots_dir / "06c_hist_dv_delta_mag.png",
         color=_CYAN,
@@ -442,46 +494,120 @@ def main() -> None:
 
     _plot_hist(
         dv_infl,
-        xlabel="Δv inflation  [ND]",
+        xlabel="Δv inflation  [dimensionless CR3BP velocity]",
         title=f"ΔV Inflation  ·  {config.study_name}  (n={n})",
         outpath=plots_dir / "06c_hist_dv_inflation.png",
         color=_CYAN,
         tol=None,
+        xmin_zero=False,
+    )
+
+    _plot_hist(
+        dv_infl_pct,
+        xlabel="(|Δv_EKF| / |Δv_perfect| − 1) × 100  [%]",
+        title=f"Relative ΔV Inflation vs Perfect-Information Burn  ·  {config.study_name}  (n={n})",
+        outpath=plots_dir / "06c_hist_dv_inflation_pct.png",
+        color=_AMBER,
+        tol=None,
+        xmin_zero=False,
     )
 
     _plot_hist(
         miss_ekf,
-        xlabel="‖r_ekf(tf) − r_target‖  [ND]",
+        xlabel="‖r_ekf(tf) − r_target‖  [dimensionless CR3BP length]",
         title=f"EKF Terminal Miss  ·  {config.study_name}  (n={n})",
         outpath=plots_dir / "06c_hist_miss_ekf.png",
         color=_VIOLET,
         tol=float(args.tol),
     )
 
+    _plot_hist(
+        valid_rate,
+        xlabel="valid bearing-update rate  [fraction of scheduled updates]",
+        title=f"Measurement Availability  ·  {config.study_name}  (n={n})",
+        outpath=plots_dir / "06c_hist_valid_measurement_rate.png",
+        color=_GREEN,
+        tol=None,
+    )
+
     _plot_scatter(
         pos_err_tc, dv_delta,
-        xlabel="‖r̂(tc) − r(tc)‖  [ND]",
-        ylabel="‖Δv_ekf − Δv_perfect‖  [ND]",
+        xlabel="‖r̂(tc) − r(tc)‖  [dimensionless CR3BP length]",
+        ylabel="‖Δv_ekf − Δv_perfect‖  [dimensionless CR3BP velocity]",
         title=f"State Error at tc  vs  Burn Error  ·  {config.study_name}",
         outpath=plots_dir / "06c_scatter_poserr_vs_dvdelta.png",
+    )
+
+    _plot_scatter(
+        valid_rate, miss_ekf,
+        xlabel="valid bearing-update rate  [fraction]",
+        ylabel="‖r_ekf(tf) − r_target‖  [dimensionless CR3BP length]",
+        title=f"Measurement Availability  vs  Terminal Miss  ·  {config.study_name}",
+        outpath=plots_dir / "06c_scatter_validrate_vs_miss.png",
+    )
+
+    _plot_scatter(
+        nis_mean, miss_ekf,
+        xlabel="mean NIS  [expected ≈ 2 for a consistent 2-D bearing residual]",
+        ylabel="‖r_ekf(tf) − r_target‖  [dimensionless CR3BP length]",
+        title=f"IEKF Innovation Consistency  vs  Terminal Miss  ·  {config.study_name}",
+        outpath=plots_dir / "06c_scatter_nis_vs_miss.png",
     )
 
     if not args.no_plot_d:
         _plot_scatter(
             tracePpos_tc, miss_ekf,
-            xlabel="tr(P_pos) at tc  [ND²]",
-            ylabel="‖r_ekf(tf) − r_target‖  [ND]",
+            xlabel="tr(P_pos) at tc  [dimensionless CR3BP length²]",
+            ylabel="‖r_ekf(tf) − r_target‖  [dimensionless CR3BP length]",
             title=f"Position Covariance  vs  Terminal Miss  ·  {config.study_name}",
             outpath=plots_dir / "06c_scatter_traceP_vs_miss.png",
+        )
+
+    representative_plot: Path | None = None
+    if int(args.representative_trial_id) >= 0:
+        trial_id = int(args.representative_trial_id)
+        rng = make_trial_rng(config.base_seed, trial_id)
+        seed = int(rng.integers(0, 2**31 - 1))
+        dx0 = sample_injection_error(
+            rng,
+            sigma_r=float(config.sigma_r_inj),
+            sigma_v=float(config.sigma_v_inj),
+            planar_only=bool(config.planar_only),
+        )
+        est_err = sample_estimation_error(
+            rng,
+            sigma_r=float(config.sigma_r_est),
+            sigma_v=float(config.sigma_v_est),
+            planar_only=bool(config.planar_only),
+        )
+        rep_out = run_case(
+            mu=config.mu,
+            t0=config.t0,
+            tf=config.tf,
+            tc=config.tc,
+            dt_meas=config.dt_meas,
+            sigma_px=config.sigma_px,
+            dropout_prob=config.dropout_prob,
+            seed=seed,
+            dx0=dx0,
+            est_err=est_err,
+            camera_mode=config.camera_mode,
+        )
+        representative_plot = plots_dir / "06c_representative_trial_orbit.png"
+        _plot_representative_orbit(
+            rep_out,
+            mu=float(config.mu),
+            trial_id=trial_id,
+            outpath=representative_plot,
         )
 
     print("=== 06C Summary " + "=" * 46)
     print(f"  trials            : {summary.get('n', n)}")
     print(f"  mean dv_delta_mag : {float(np.nanmean(dv_delta)):.4e}"
           f"  (σ {float(np.nanstd(dv_delta)):.4e})")
-    print(f"  mean dv_inflation : {summary.get('dv_inflation_mean', float('nan')):.4e}"
-          f"  (σ {summary.get('dv_inflation_std', float('nan')):.4e})")
-    print(f"  p95  miss_ekf     : {summary.get('miss_ekf_p95', float('nan')):.4e}")
+    print(f"  mean dv_inflation : {_summary_stat('dv_inflation', 'mean'):.4e}"
+          f"  (σ {_summary_stat('dv_inflation', 'std'):.4e})")
+    print(f"  p95  miss_ekf     : {_summary_stat('miss_ekf', 'p95'):.4e}")
     if "success_rate" in summary:
         print(f"  success_rate      : {summary['success_rate']:.3f}"
               f"  (tol={args.tol:g})")
@@ -492,11 +618,17 @@ def main() -> None:
     plot_names = [
         "06c_hist_dv_delta_mag.png",
         "06c_hist_dv_inflation.png",
+        "06c_hist_dv_inflation_pct.png",
         "06c_hist_miss_ekf.png",
+        "06c_hist_valid_measurement_rate.png",
         "06c_scatter_poserr_vs_dvdelta.png",
+        "06c_scatter_validrate_vs_miss.png",
+        "06c_scatter_nis_vs_miss.png",
     ]
     if not args.no_plot_d:
         plot_names.append("06c_scatter_traceP_vs_miss.png")
+    if representative_plot is not None:
+        plot_names.append(representative_plot.name)
     for name in plot_names:
         print(f"  Plot : {plots_dir / name}")
 

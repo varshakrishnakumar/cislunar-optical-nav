@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import json
-import hashlib
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 from urllib.request import urlopen
@@ -59,54 +57,10 @@ def fetch_periodic_orbits(
     *,
     timeout_s: float = 30.0,
 ) -> PeriodicOrbitCatalog:
-    payload = fetch_periodic_orbits_payload(query, timeout_s=timeout_s)
-    return parse_periodic_orbits_payload(payload)
-
-
-def fetch_periodic_orbits_cached(
-    query: PeriodicOrbitQuery,
-    *,
-    cache_dir: str | Path = "data/cache/jpl_periodic_orbits",
-    timeout_s: float = 30.0,
-    refresh: bool = False,
-) -> PeriodicOrbitCatalog:
-    cache_path = periodic_orbit_cache_path(query, cache_dir=cache_dir)
-    if cache_path.exists() and not refresh:
-        payload = json.loads(cache_path.read_text())
-        return parse_periodic_orbits_payload(payload)
-
-    payload = fetch_periodic_orbits_payload(query, timeout_s=timeout_s)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    cache_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
-    return parse_periodic_orbits_payload(payload)
-
-
-def fetch_periodic_orbits_payload(
-    query: PeriodicOrbitQuery,
-    *,
-    timeout_s: float = 30.0,
-) -> dict:
-    url = periodic_orbit_api_url(query)
+    url = f"{BASE_URL}?{urlencode(query.params())}"
     with urlopen(url, timeout=timeout_s) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def periodic_orbit_api_url(query: PeriodicOrbitQuery) -> str:
-    return f"{BASE_URL}?{urlencode(query.params())}"
-
-
-def periodic_orbit_cache_path(
-    query: PeriodicOrbitQuery,
-    *,
-    cache_dir: str | Path = "data/cache/jpl_periodic_orbits",
-) -> Path:
-    params_json = json.dumps(query.params(), sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(params_json.encode("utf-8")).hexdigest()[:16]
-    sys_name = str(query.system).replace("-", "_")
-    family = str(query.family).replace("-", "_")
-    libr = "any" if query.libration_point is None else f"L{query.libration_point}"
-    branch = "any" if not query.branch else str(query.branch)
-    return Path(cache_dir) / f"{sys_name}_{family}_{libr}_{branch}_{digest}.json"
+        payload = json.loads(response.read().decode("utf-8"))
+    return parse_periodic_orbits_payload(payload)
 
 
 def parse_periodic_orbits_payload(payload: dict) -> PeriodicOrbitCatalog:

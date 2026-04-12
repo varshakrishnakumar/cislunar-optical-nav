@@ -5,10 +5,10 @@ from pathlib import Path
 from typing import Sequence
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 
 from vision.blob_detection import BlobDetectionResult
+from visualization.style import plt
 
 
 Array = np.ndarray
@@ -39,10 +39,26 @@ def annotate_crop(image_bgr: np.ndarray, detection: BlobDetectionResult) -> np.n
 def save_video_from_frames(
     frames_bgr: Sequence[np.ndarray],
     output_path: Path,
-    fps: float = 15.0,
+    fps: float = 8.0,
+    *,
+    timestamps: Sequence[float] | None = None,
 ) -> None:
+    """Write frames to an mp4 file.
+
+    Parameters
+    ----------
+    timestamps:
+        Optional sequence of simulation times (one per frame).  When provided,
+        each frame is annotated with ``frame N/M  t=<value>`` in the top-left
+        corner so that detections can be correlated back to the EKF timeline.
+    """
     if not frames_bgr:
         raise ValueError("No frames provided.")
+    if timestamps is not None and len(timestamps) != len(frames_bgr):
+        raise ValueError(
+            f"timestamps length ({len(timestamps)}) must match "
+            f"frames_bgr length ({len(frames_bgr)})."
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -53,10 +69,25 @@ def save_video_from_frames(
     if not writer.isOpened():
         raise RuntimeError(f"Could not open video writer for {output_path}")
 
-    for frame in frames_bgr:
+    total = len(frames_bgr)
+    for i, frame in enumerate(frames_bgr):
         if frame.shape[:2] != (h, w):
             raise ValueError("All frames must have same size.")
-        writer.write(frame)
+        out_frame = frame.copy()
+        label_parts = [f"{i + 1}/{total}"]
+        if timestamps is not None:
+            label_parts.append(f"t={float(timestamps[i]):.3f}")
+        cv2.putText(
+            out_frame,
+            "  ".join(label_parts),
+            (8, 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (200, 200, 200),
+            1,
+            cv2.LINE_AA,
+        )
+        writer.write(out_frame)
 
     writer.release()
 
@@ -95,12 +126,6 @@ def save_crop_strip(
 
 def _bgr_to_rgb(image_bgr: Array) -> Array:
     return cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-
-
-def _mask_to_rgb(mask: Array) -> Array:
-    if mask.ndim != 2:
-        raise ValueError("Expected 2D mask.")
-    return np.dstack([mask, mask, mask])
 
 
 def _draw_overlay(image_bgr: Array, detection: BlobDetectionResult) -> Array:
@@ -176,7 +201,6 @@ def save_comparison_panel(
 
     raw_rgb = _bgr_to_rgb(image_bgr)
     overlay_rgb = _bgr_to_rgb(_draw_overlay(image_bgr, detection))
-    mask_rgb = _mask_to_rgb(detection.mask)
 
     fig, axes = plt.subplots(1, 3, figsize=(12, 4))
 
@@ -188,7 +212,9 @@ def save_comparison_panel(
     axes[1].set_title("Centroid + blob")
     axes[1].axis("off")
 
-    axes[2].imshow(mask_rgb, cmap="gray")
+    # Pass the 2-D binary mask directly so matplotlib applies the colormap;
+    # an already-stacked RGB array would ignore the cmap parameter entirely.
+    axes[2].imshow(detection.mask, cmap="hot")
     axes[2].set_title("Detected mask")
     axes[2].axis("off")
 

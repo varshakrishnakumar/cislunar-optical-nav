@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from _common import ensure_src_on_path
+
+ensure_src_on_path()
+
 import numpy as np
-import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from scipy.stats import chi2
+from visualization.style import plt
 
 from dynamics.integrators import propagate
 from dynamics.cr3bp import CR3BP
@@ -135,8 +139,8 @@ def main() -> None:
     nis_hi = chi2.ppf(0.975, df=2)
     nis_ok = np.isfinite(nis)
 
-    print(f"Final ||pos error|| = {pos_err[-1]:.3e} ND")
-    print(f"Final ||vel error|| = {vel_err[-1]:.3e} ND")
+    print(f"Final ||pos error|| = {pos_err[-1]:.3e} dimensionless CR3BP length")
+    print(f"Final ||vel error|| = {vel_err[-1]:.3e} dimensionless CR3BP velocity")
     print(f"Mean NIS (k≥1)      = {np.nanmean(nis[1:]):.3f}  (expect ~2)")
 
     fig, axs = plt.subplots(3, 1, figsize=(10, 10), sharex=True,
@@ -147,7 +151,7 @@ def main() -> None:
     ax.plot(t_meas, pos_err, color=_CYAN, lw=1.8, label="‖r̂ − r‖", zorder=3)
     ax.plot(t_meas, sig_x, color=_VIOLET, lw=1.0, ls="--", alpha=0.7, label="3σ x")
     ax.plot(t_meas, sig_y, color=_VIOLET, lw=1.0, ls=":",  alpha=0.7, label="3σ y")
-    ax.set_ylabel("Position error  [ND]", color=_TEXT)
+    ax.set_ylabel("Position error  [dimensionless CR3BP length]", color=_TEXT)
     ax.set_title("Bearing-Only EKF — Near-L1 CR3BP Navigation", color=_TEXT,
                  fontsize=14, pad=10)
     ax.legend(loc="upper right")
@@ -158,7 +162,7 @@ def main() -> None:
 
     ax = axs[1]
     ax.plot(t_meas, vel_err, color=_AMBER, lw=1.8, label="‖v̂ − v‖", zorder=3)
-    ax.set_ylabel("Velocity error  [ND]", color=_TEXT)
+    ax.set_ylabel("Velocity error  [dimensionless CR3BP velocity]", color=_TEXT)
     ax.legend(loc="upper right")
     ax.grid(True)
     ax.set_yscale("log")
@@ -171,7 +175,7 @@ def main() -> None:
         c = _GREEN if nis_lo <= nis[k] <= nis_hi else _RED
         ax.scatter(t_meas[k], nis[k], s=8, color=c, zorder=4)
     ax.set_ylabel("NIS", color=_TEXT)
-    ax.set_xlabel("Time  [ND]", color=_TEXT)
+    ax.set_xlabel("Time  [dimensionless CR3BP time]", color=_TEXT)
     ax.legend(loc="upper right")
     ax.grid(True)
 
@@ -188,8 +192,8 @@ def main() -> None:
     fig.patch.set_facecolor(_BG)
 
     for ax, err, sig, label, col in [
-        (axs[0], err_x, sig_x, "x-axis position error  [ND]", _CYAN),
-        (axs[1], err_y, sig_y, "y-axis position error  [ND]", _AMBER),
+        (axs[0], err_x, sig_x, "x-axis position error  [dimensionless CR3BP length]", _CYAN),
+        (axs[1], err_y, sig_y, "y-axis position error  [dimensionless CR3BP length]", _AMBER),
     ]:
         ax.fill_between(t_meas, -sig, sig, color=_VIOLET, alpha=0.18, label="±3σ")
         ax.plot(t_meas, err, color=col, lw=1.5, label="error", zorder=3)
@@ -203,7 +207,7 @@ def main() -> None:
 
     axs[0].set_title("Position 3σ Consistency — Bearing-Only EKF", color=_TEXT,
                       fontsize=13, pad=8)
-    axs[1].set_xlabel("Time  [ND]", color=_TEXT)
+    axs[1].set_xlabel("Time  [dimensionless CR3BP time]", color=_TEXT)
 
     fig.savefig("results/plots/03_bearings_consistency.png", dpi=200, bbox_inches="tight")
     plt.close(fig)

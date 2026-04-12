@@ -4,11 +4,15 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from _common import ensure_src_on_path
+
+ensure_src_on_path()
+
 import numpy as np
-import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.lines import Line2D
 from scipy.stats import chi2
+from visualization.style import plt
 
 from dynamics.cr3bp import CR3BP
 from dynamics.integrators import propagate
@@ -125,7 +129,7 @@ def _render_split_frame(
 
     status = "ACCEPTED" if update_used else ("DETECTED" if valid_now else "NO DETECT")
     status_color = _GREEN if update_used else (_AMBER if valid_now else _RED)
-    ax_cam.text(12, 18, f"t = {t:.3f} ND\n{status}",
+    ax_cam.text(12, 18, f"t = {t:.3f} dimensionless\n{status}",
                 color=status_color, fontsize=10, family="monospace",
                 va="top", ha="left",
                 bbox=dict(facecolor="#050709", edgecolor=_BORDER, pad=5, alpha=0.85))
@@ -152,8 +156,8 @@ def _render_split_frame(
                         s=30, c=_AMBER, marker="D", zorder=6)
 
     ax_traj.set_title("CR3BP XY Orbit (near L1)", color=_TEXT, fontsize=10)
-    ax_traj.set_xlabel("x [ND]", color=_TEXT, fontsize=9)
-    ax_traj.set_ylabel("y [ND]", color=_TEXT, fontsize=9)
+    ax_traj.set_xlabel("x [dimensionless CR3BP length]", color=_TEXT, fontsize=9)
+    ax_traj.set_ylabel("y [dimensionless CR3BP length]", color=_TEXT, fontsize=9)
     ax_traj.legend(loc="lower left", fontsize=8)
     ax_traj.grid(True)
 
@@ -186,8 +190,8 @@ def _render_split_frame(
     ax_nis.set_ylim(0, 20)
 
     ax_err.set_title("Position Error & NIS", color=_TEXT, fontsize=10)
-    ax_err.set_xlabel("t [ND]", color=_TEXT, fontsize=9)
-    ax_err.set_ylabel("‖r̂ − r‖  [ND]", color=_CYAN, fontsize=9)
+    ax_err.set_xlabel("t [dimensionless CR3BP time]", color=_TEXT, fontsize=9)
+    ax_err.set_ylabel("‖r̂ − r‖  [dimensionless CR3BP length]", color=_CYAN, fontsize=9)
     ax_err.tick_params(axis="y", colors=_CYAN)
     ax_err.grid(True)
     for sp in ax_err.spines.values():
@@ -304,8 +308,8 @@ def main() -> None:
 
     print(f"Valid measurements : {int(valid_arr.sum())} / {N}")
     print(f"Updates used       : {int(upd_used_arr.sum())}")
-    print(f"Final pos error    : {pos_err_arr[-1]:.3e} ND")
-    print(f"Final vel error    : {vel_err_arr[-1]:.3e} ND")
+    print(f"Final pos error    : {pos_err_arr[-1]:.3e} dimensionless CR3BP length")
+    print(f"Final vel error    : {vel_err_arr[-1]:.3e} dimensionless CR3BP velocity")
     print(f"Mean NIS (k≥1)     : {np.nanmean(nis_arr[1:]):.3f}")
 
     fig, axs = plt.subplots(2, 2, figsize=(13, 8),
@@ -323,8 +327,8 @@ def main() -> None:
     ax.scatter(X_true[upd_idx, 0], X_true[upd_idx, 1],
                s=12, c=_GREEN, zorder=6, label="Updates", alpha=0.7)
     ax.set_title("CR3BP XY Trajectory", color=_TEXT)
-    ax.set_xlabel("x  [ND]", color=_TEXT)
-    ax.set_ylabel("y  [ND]", color=_TEXT)
+    ax.set_xlabel("x  [dimensionless CR3BP length]", color=_TEXT)
+    ax.set_ylabel("y  [dimensionless CR3BP length]", color=_TEXT)
     ax.legend(loc="best", fontsize=9)
     ax.grid(True)
     for sp in ax.spines.values(): sp.set_edgecolor(_BORDER)
@@ -337,8 +341,8 @@ def main() -> None:
     ax.semilogy(t_meas, vel_err_arr + 1e-12, color=_AMBER, lw=1.5, ls="--",
                 label="‖vel err‖", alpha=0.85)
     ax.set_title("State Estimation Errors", color=_TEXT)
-    ax.set_xlabel("t  [ND]", color=_TEXT)
-    ax.set_ylabel("Error norm  [ND]", color=_TEXT)
+    ax.set_xlabel("t  [dimensionless CR3BP time]", color=_TEXT)
+    ax.set_ylabel("Error norm  [dimensionless CR3BP units]", color=_TEXT)
     ax.legend(loc="upper right", fontsize=9)
     ax.grid(True)
     for sp in ax.spines.values(): sp.set_edgecolor(_BORDER)
@@ -356,7 +360,7 @@ def main() -> None:
     ax.scatter(t_meas[in_band],  nis_arr[in_band],  s=10, c=_GREEN, zorder=4)
     ax.scatter(t_meas[out_band], nis_arr[out_band], s=10, c=_RED,   zorder=4)
     ax.set_title(f"NIS  (mean={np.nanmean(nis_arr[1:]):.2f})", color=_TEXT)
-    ax.set_xlabel("t  [ND]", color=_TEXT)
+    ax.set_xlabel("t  [dimensionless CR3BP time]", color=_TEXT)
     ax.set_ylabel("NIS", color=_TEXT)
     ax.legend(loc="upper right", fontsize=9)
     ax.set_ylim(0, 18)
@@ -375,7 +379,7 @@ def main() -> None:
     scatter = ax.scatter(u_px_arr[v_mask], v_px_arr[v_mask], c=t_meas[v_mask],
                          cmap="plasma", s=8, vmin=t0, vmax=tf, zorder=3)
     cb = fig.colorbar(scatter, ax=ax, fraction=0.04, pad=0.02)
-    cb.set_label("t [ND]", color=_TEXT)
+    cb.set_label("t [dimensionless CR3BP time]", color=_TEXT)
     cb.ax.yaxis.set_tick_params(color=_TEXT)
     plt.setp(cb.ax.yaxis.get_ticklabels(), color=_TEXT)
     ax.set_title("Moon Detection Track on Image Plane", color=_TEXT)

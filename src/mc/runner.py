@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import inspect
+import os
 import traceback
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
 from .metrics import trial_result_from_run_case
@@ -38,13 +40,31 @@ def run_monte_carlo(
     case_fn: CaseFn,
     *,
     on_trial_error: str = "warn",
+    n_workers: int = 1,
 ) -> List[TrialResult]:
+    """Run a Monte Carlo study.
+
+    Parameters
+    ----------
+    n_workers:
+        Number of worker threads. ``1`` (default) runs sequentially.
+        ``-1`` uses ``os.cpu_count()``. Any positive integer limits the pool
+        to that many threads. Trials complete in trial-id order regardless.
+
+        For meaningful speedup, install numba (``pip install numba``) so the
+        CR3BP integrator releases the GIL during solve_ivp; otherwise thread
+        overhead may exceed gains for small trial counts.
+    """
     if on_trial_error not in ("warn", "raise", "skip"):
         raise ValueError(f"on_trial_error must be 'warn', 'raise', or 'skip'")
 
-    results: List[TrialResult] = []
-    n_failed = 0
-    _warned_drop = False
+    # ------------------------------------------------------------------
+    # Pre-compute every trial's kwargs in the main thread.
+    # This keeps sampling deterministic and fires the "dropped kwargs"
+    # warning exactly once before any parallel work begins.
+    # ------------------------------------------------------------------
+    trial_data: List[tuple] = []
+    accepted_keys: Optional[set] = None
 
     for trial_id in range(int(config.n_trials)):
         rng  = make_trial_rng(config.base_seed, trial_id)
@@ -77,33 +97,20 @@ def run_monte_carlo(
             camera_mode=config.camera_mode,
         )
 
-        if not _warned_drop:
-            kwargs = _filter_kwargs(case_fn, all_kwargs)
-            _warned_drop = True
+        if accepted_keys is None:
+            kwargs = _filter_kwargs(case_fn, all_kwargs)   # may warn once
+            accepted_keys = set(kwargs)
         else:
-            params = inspect.signature(case_fn).parameters
-            accepts_var = any(
-                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
-            )
-            kwargs = all_kwargs if accepts_var else {
-                k: v for k, v in all_kwargs.items() if k in params
-            }
+            kwargs = {k: v for k, v in all_kwargs.items() if k in accepted_keys}
 
-        try:
-            out = case_fn(**kwargs)
-        except Exception as exc:
-            n_failed += 1
-            if on_trial_error == "raise":
-                raise
-            msg = (
-                f"[MC trial {trial_id}] case_fn raised {type(exc).__name__}: {exc}\n"
-                + traceback.format_exc()
-            )
-            if on_trial_error == "warn":
-                warnings.warn(msg, RuntimeWarning, stacklevel=2)
-            continue
+        trial_data.append((trial_id, seed, dx0, kwargs))
 
-        res = trial_result_from_run_case(
+    # ------------------------------------------------------------------
+    # Per-trial worker — captures case_fn and config from enclosing scope.
+    # ------------------------------------------------------------------
+    def _run_one(trial_id: int, seed: int, dx0, kwargs: Dict[str, Any]) -> TrialResult:
+        out = case_fn(**kwargs)
+        return trial_result_from_run_case(
             trial_id=trial_id,
             seed=seed,
             tc=config.tc,
@@ -113,12 +120,59 @@ def run_monte_carlo(
             dx0=dx0,
             out=out,
         )
-        results.append(res)
 
-    if n_failed > 0 and on_trial_error != "raise":
+    # ------------------------------------------------------------------
+    # Execute — sequential or threaded.
+    # ------------------------------------------------------------------
+    results: List[TrialResult] = []
+    failed_ids: List[int] = []
+
+    if n_workers == 1:
+        for trial_id, seed, dx0, kwargs in trial_data:
+            try:
+                results.append(_run_one(trial_id, seed, dx0, kwargs))
+            except Exception as exc:
+                failed_ids.append(trial_id)
+                if on_trial_error == "raise":
+                    raise
+                if on_trial_error == "warn":
+                    warnings.warn(
+                        f"[MC trial {trial_id}] case_fn raised "
+                        f"{type(exc).__name__}: {exc}\n" + traceback.format_exc(),
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+    else:
+        workers = (os.cpu_count() or 1) if n_workers < 0 else n_workers
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {ex.submit(_run_one, *td): td[0] for td in trial_data}
+            for future in as_completed(futures):
+                trial_id = futures[future]
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    failed_ids.append(trial_id)
+                    if on_trial_error == "raise":
+                        raise
+                    if on_trial_error == "warn":
+                        warnings.warn(
+                            f"[MC trial {trial_id}] case_fn raised "
+                            f"{type(exc).__name__}: {exc}\n" + traceback.format_exc(),
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+        results.sort(key=lambda r: r.trial_id)
+
+    if failed_ids and on_trial_error != "raise":
+        id_str = (
+            str(failed_ids)
+            if len(failed_ids) <= 10
+            else f"{failed_ids[:10]} ... ({len(failed_ids)} total)"
+        )
         warnings.warn(
-            f"Monte Carlo run '{config.study_name}' completed with {n_failed} / "
-            f"{config.n_trials} failed trials.",
+            f"Monte Carlo run '{config.study_name}' completed with "
+            f"{len(failed_ids)} / {config.n_trials} failed trials. "
+            f"Failed trial IDs: {id_str}",
             RuntimeWarning,
             stacklevel=2,
         )

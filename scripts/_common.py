@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -10,9 +11,19 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 SRC_DIR = REPO_ROOT / "src"
 DEFAULT_JPL_CACHE_DIR = REPO_ROOT / "data" / "cache" / "jpl_periodic_orbits"
+DEFAULT_RUNTIME_CACHE_DIR = Path("/tmp/cislunar_optical_nav_cache")
+DEFAULT_MPL_CACHE_DIR = Path("/tmp/cislunar_optical_nav_mpl_cache")
+
+
+def ensure_runtime_cache_dirs() -> None:
+    DEFAULT_RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    DEFAULT_MPL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("XDG_CACHE_HOME", str(DEFAULT_RUNTIME_CACHE_DIR))
+    os.environ.setdefault("MPLCONFIGDIR", str(DEFAULT_MPL_CACHE_DIR))
 
 
 def ensure_src_on_path() -> None:
+    ensure_runtime_cache_dirs()
     src = str(SRC_DIR)
     if src not in sys.path:
         sys.path.insert(0, src)

@@ -1,4 +1,9 @@
 from __future__ import annotations
+
+from _common import ensure_src_on_path
+
+ensure_src_on_path()
+
 import numpy as np
 from dynamics.cr3bp import CR3BP
 from dynamics.integrators import propagate

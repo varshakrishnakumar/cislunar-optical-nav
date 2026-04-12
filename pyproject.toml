@@ -18,10 +18,13 @@ dependencies = [
 high-fidelity = [
     "spiceypy",
 ]
+fast = [
+    "numba",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["dynamics*", "nav*", "guidance*", "mc*", "orbits*", "utils*", "cv*"]
+include = ["dynamics*", "nav*", "guidance*", "mc*", "orbits*", "utils*", "cv*", "visualization*"]
