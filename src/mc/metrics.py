@@ -22,11 +22,12 @@ def trial_result_from_run_case(
     dv_ekf_mag     = float(out["dv_ekf_mag"])
     dv_delta_mag   = float(out["dv_delta_mag"])
 
-    dv_inflation = float(
-        out["dv_inflation"]
-        if "dv_inflation" in out
-        else dv_ekf_mag - dv_perfect_mag
-    )
+    if "dv_mag_bias" in out:
+        dv_mag_bias = float(out["dv_mag_bias"])
+    elif "dv_inflation" in out:
+        dv_mag_bias = float(out["dv_inflation"])
+    else:
+        dv_mag_bias = dv_ekf_mag - dv_perfect_mag
 
     if "dv_inflation_pct" in out:
         dv_inflation_pct = float(out["dv_inflation_pct"])
@@ -61,7 +62,7 @@ def trial_result_from_run_case(
         dv_perfect_mag=dv_perfect_mag,
         dv_ekf_mag=dv_ekf_mag,
         dv_delta_mag=dv_delta_mag,
-        dv_inflation=dv_inflation,
+        dv_mag_bias=dv_mag_bias,
         dv_inflation_pct=dv_inflation_pct,
         miss_uncorrected=miss_uncorrected,
         miss_perfect=miss_perfect,

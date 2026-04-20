@@ -68,8 +68,6 @@ def _make_camera() -> tuple[Intrinsics, np.ndarray]:
 
 
 def _resolve_camera_mode(camera_mode: Any) -> str:
-    if isinstance(camera_mode, bool):
-        return "fixed" if camera_mode else "estimate_tracking"
     s = str(camera_mode).strip().lower()
     if s not in _VALID_CAMERA_MODES:
         raise ValueError(
@@ -92,6 +90,9 @@ def run_case(
     est_err: np.ndarray,
     *,
     camera_mode: CameraMode = "estimate_tracking",
+    q_acc: float = 1e-14,
+    return_debug: bool = True,
+    accumulate_gramian: bool = True,
 ) -> Dict[str, Any]:
     camera_mode = _resolve_camera_mode(camera_mode)
 
@@ -125,7 +126,7 @@ def run_case(
     # Position σ ~ 1e-3 DU, velocity σ ~ 1e-3.5 DU/TU (velocity uncertainty
     # is ~10× smaller than position in CR3BP dimensionless units).
     P     = np.diag([1e-6, 1e-6, 1e-6, 1e-7, 1e-7, 1e-7]).astype(float)
-    q_acc = 1e-14
+    q_acc = float(q_acc)
 
     x_hat_hist:   list[np.ndarray] = []
     nis_list:     list[float]      = []
@@ -136,19 +137,19 @@ def run_case(
     valid_arr     = np.zeros(k_tc + 1, dtype=bool)
 
     # Observability Gramian: W = Σ_k Φ(t_k,t_0)ᵀ Hₖᵀ Hₖ Φ(t_k,t_0)
-    # Accumulated over every accepted measurement. Eigenvectors of W reveal
-    # which state-space directions are (poorly) observable from bearing-only data.
-    Phi_cum          = np.eye(6, dtype=float)   # cumulative STM: Φ(t_k, t_0)
-    W_obs            = np.zeros((6, 6), dtype=float)
-    gramian_eig_hist: list[np.ndarray] = []     # eigenvalue snapshots, shape (k_tc, 6)
+    # Eigenvectors of W reveal which state-space directions are (poorly)
+    # observable from bearing-only data. Gated for Monte Carlo efficiency.
+    Phi_cum          = np.eye(6, dtype=float) if accumulate_gramian else None
+    W_obs            = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
+    gramian_eig_hist: list[np.ndarray] = []
 
     for k in range(1, k_tc + 1):
         x_hat, P, Phi_step = ekf_propagate_cr3bp_stm(
             mu=float(mu), x=x_hat, P=P,
             t0=float(t_meas[k - 1]), t1=float(t_meas[k]), q_acc=q_acc,
         )
-        # Φ(t_k, t_0) = Φ(t_k, t_{k-1}) · Φ(t_{k-1}, t_0)
-        Phi_cum = Phi_step @ Phi_cum
+        if accumulate_gramian:
+            Phi_cum = Phi_step @ Phi_cum
 
         r_sc_true = xs_true[k, :3]
         if camera_mode == "fixed":
@@ -177,8 +178,8 @@ def run_case(
                 )
                 if upd.accepted:
                     x_hat, P = upd.x_upd, upd.P_upd
-                    # Each accepted measurement contributes Φᵀ HᵀH Φ to the Gramian.
-                    W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
+                    if accumulate_gramian:
+                        W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
                 nis_list.append(float(upd.nis))
                 innov_2d_list.append(
                     upd.final_innovation.copy()
@@ -205,15 +206,11 @@ def run_case(
         x_hat_hist.append(x_hat.copy())
         pos_err_list.append(_norm(x_hat[:3] - xs_true[k, :3]))
         P_diag_list.append(np.diag(P).copy())
-        gramian_eig_hist.append(np.linalg.eigvalsh(W_obs).copy())  # ascending
+        if accumulate_gramian:
+            gramian_eig_hist.append(np.linalg.eigvalsh(W_obs).copy())
 
-    x_hat_arr    = np.asarray(x_hat_hist)
     nis_arr      = np.asarray(nis_list)
     nees_arr     = np.asarray(nees_list)
-    innov_2d_arr = np.asarray(innov_2d_list)   # shape (k_tc, 2)
-    pos_err_arr  = np.asarray(pos_err_list)
-    P_diag_arr   = np.asarray(P_diag_list)
-    gramian_eig_arr = np.asarray(gramian_eig_hist)  # shape (k_tc, 6), ascending λ
 
     x_true_tc    = xs_true[k_tc]
     x_hat_tc     = x_hat.copy()
@@ -256,16 +253,20 @@ def run_case(
     dv_perfect_mag = _norm(dv_perf)
     dv_ekf_mag     = _norm(dv_ekf)
     dv_delta_mag   = _norm(dv_ekf - dv_perf)
+    # Signed difference of burn magnitudes. Renamed from "dv_inflation" to
+    # prevent confusion with the fractional dv_inflation_pct ratio metric.
+    dv_mag_bias    = dv_ekf_mag - dv_perfect_mag
 
-    return {
+    out: Dict[str, Any] = {
         "tc":           tc_eff,
         "sigma_px":     float(sigma_px),
         "dropout_prob": float(dropout_prob),
         "camera_mode":  camera_mode,
+        "q_acc":        q_acc,
         "dv_perfect_mag":   dv_perfect_mag,
         "dv_ekf_mag":       dv_ekf_mag,
         "dv_delta_mag":     dv_delta_mag,
-        "dv_inflation":     dv_ekf_mag - dv_perfect_mag,
+        "dv_mag_bias":      dv_mag_bias,
         "dv_inflation_pct": (
             float("nan") if dv_perfect_mag == 0.0
             else dv_ekf_mag / dv_perfect_mag - 1.0
@@ -278,7 +279,19 @@ def run_case(
         "valid_rate":       valid_rate,
         "nis_mean":         nis_mean,
         "nees_mean":        nees_mean,
-        "debug": {
+    }
+    if not return_debug:
+        return out
+
+    x_hat_arr    = np.asarray(x_hat_hist)
+    innov_2d_arr = np.asarray(innov_2d_list)
+    pos_err_arr  = np.asarray(pos_err_list)
+    P_diag_arr   = np.asarray(P_diag_list)
+    gramian_eig_arr = (
+        np.asarray(gramian_eig_hist) if accumulate_gramian else np.empty((0, 6))
+    )
+
+    out["debug"] = {
             "t_meas":        t_meas,
             "k_tc":          k_tc,
             "xs_nom":        res_nom.x,
@@ -297,8 +310,8 @@ def run_case(
             "dv_perf":      dv_perf,
             "dv_ekf":       dv_ekf,
             "r_target":     r_target,
-        },
     }
+    return out
 
 
 def run_case_spice(
@@ -317,6 +330,9 @@ def run_case_spice(
     epoch: str = _EM_EPOCH,
     camera_mode: CameraMode = "estimate_tracking",
     targets: tuple = ("SUN", "EARTH", "MOON"),
+    q_acc_nd: float = 1e-14,
+    return_debug: bool = True,
+    accumulate_gramian: bool = True,
 ) -> Dict[str, Any]:
     """High-fidelity SPICE/JPL-ephemeris variant of run_case.
 
@@ -433,8 +449,8 @@ def run_case_spice(
             1e-6 * lsq, 1e-6 * lsq, 1e-6 * lsq,
             1e-7 * vsq, 1e-7 * vsq, 1e-7 * vsq,
         ]).astype(float)
-        # Process-noise density in km²/s³ (proportionally converted from ND q_acc=1e-14)
-        q_acc = 1e-14 * lsq / tunit_s ** 3
+        # Process-noise density in km²/s³ (proportionally converted from ND q_acc_nd)
+        q_acc = float(q_acc_nd) * lsq / tunit_s ** 3
 
         # ── EKF loop ─────────────────────────────────────────────────────────
         x_hat_hist:    list[np.ndarray] = []
@@ -444,8 +460,8 @@ def run_case_spice(
         pos_err_list:  list[float]      = []
         P_diag_list:   list[np.ndarray] = []
         valid_arr      = np.zeros(k_tc + 1, dtype=bool)
-        Phi_cum        = np.eye(6, dtype=float)
-        W_obs          = np.zeros((6, 6), dtype=float)
+        Phi_cum        = np.eye(6, dtype=float) if accumulate_gramian else None
+        W_obs          = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
         gramian_eig_hist: list[np.ndarray] = []
 
         for k in range(1, k_tc + 1):
@@ -455,7 +471,8 @@ def run_case_spice(
                 t0=float(t_meas_s[k - 1]), t1=float(t_meas_s[k]),
                 q_acc=q_acc, rtol=1e-10, atol=1e-12,
             )
-            Phi_cum = Phi_step @ Phi_cum
+            if accumulate_gramian:
+                Phi_cum = Phi_step @ Phi_cum
 
             # Moon J2000 position at this measurement step (km)
             t_k    = float(t_meas_s[k])
@@ -486,7 +503,8 @@ def run_case_spice(
                     upd = bearing_update_tangent(x_hat, P, u_g, r_body, float(sig_k))
                     if upd.accepted:
                         x_hat, P = upd.x_upd, upd.P_upd
-                        W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
+                        if accumulate_gramian:
+                            W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
                     nis_list.append(float(upd.nis))
                     innov_2d_list.append(
                         upd.final_innovation.copy()
@@ -511,15 +529,11 @@ def run_case_spice(
             x_hat_hist.append(x_hat.copy())
             pos_err_list.append(_norm(x_hat[:3] - xs_true[k, :3]))
             P_diag_list.append(np.diag(P).copy())
-            gramian_eig_hist.append(np.linalg.eigvalsh(W_obs).copy())
+            if accumulate_gramian:
+                gramian_eig_hist.append(np.linalg.eigvalsh(W_obs).copy())
 
-        x_hat_arr       = np.asarray(x_hat_hist)
         nis_arr         = np.asarray(nis_list)
         nees_arr        = np.asarray(nees_list)
-        innov_2d_arr    = np.asarray(innov_2d_list)
-        pos_err_arr     = np.asarray(pos_err_list)
-        P_diag_arr      = np.asarray(P_diag_list)
-        gramian_eig_arr = np.asarray(gramian_eig_hist)
 
         x_true_tc    = xs_true[k_tc]
         x_hat_tc     = x_hat.copy()
@@ -563,19 +577,21 @@ def run_case_spice(
         dv_perfect_mag = _norm(dv_perf)
         dv_ekf_mag     = _norm(dv_ekf)
         dv_delta_mag   = _norm(dv_ekf - dv_perf)
+        dv_mag_bias    = dv_ekf_mag - dv_perfect_mag
 
-        return {
+        out: Dict[str, Any] = {
             "tc":             tc_eff,
             "sigma_px":       float(sigma_px),
             "dropout_prob":   float(dropout_prob),
             "camera_mode":    camera_mode,
+            "q_acc_nd":       float(q_acc_nd),
             "units":          "km/km_s",
             "lunit_km":       lunit_km,
             "tunit_s":        tunit_s,
             "dv_perfect_mag": dv_perfect_mag,    # km/s
             "dv_ekf_mag":     dv_ekf_mag,         # km/s
             "dv_delta_mag":   dv_delta_mag,       # km/s
-            "dv_inflation":   dv_ekf_mag - dv_perfect_mag,
+            "dv_mag_bias":    dv_mag_bias,        # km/s (signed)
             "dv_inflation_pct": (
                 float("nan") if dv_perfect_mag == 0.0
                 else dv_ekf_mag / dv_perfect_mag - 1.0
@@ -588,7 +604,19 @@ def run_case_spice(
             "valid_rate":       valid_rate,
             "nis_mean":         nis_mean,
             "nees_mean":        nees_mean,
-            "debug": {
+        }
+        if not return_debug:
+            return out
+
+        x_hat_arr       = np.asarray(x_hat_hist)
+        innov_2d_arr    = np.asarray(innov_2d_list)
+        pos_err_arr     = np.asarray(pos_err_list)
+        P_diag_arr      = np.asarray(P_diag_list)
+        gramian_eig_arr = (
+            np.asarray(gramian_eig_hist) if accumulate_gramian else np.empty((0, 6))
+        )
+
+        out["debug"] = {
                 "t_meas":           t_meas_s,
                 "k_tc":             k_tc,
                 "xs_nom":           res_nom.x,
@@ -609,8 +637,8 @@ def run_case_spice(
                 "r_target":         r_target,
                 "lunit_km":         lunit_km,
                 "tunit_s":          tunit_s,
-            },
         }
+        return out
     finally:
         ephemeris.close()
 
@@ -952,12 +980,12 @@ def main() -> None:
     ax_dir = fig4.add_subplot(gs4[1, 0])
     _ax_style(ax_dir)
     model_dir = CR3BP(mu=mu)
-    ax_dir.scatter([model_dir.primary1[0]], [model_dir.primary1[1]],
-                   s=80, c=_EARTH_C, zorder=5, label="Earth")
+    ax_dir.plot(xs_true[:k_tc+1, 0], xs_true[:k_tc+1, 1],
+                color=_AMBER, lw=1.6, ls="--", alpha=0.85, label="truth arc")
+    # Moon inside the zoom window; Earth at x=0 is far off-frame and omitted
+    # to keep the trajectory readable.
     ax_dir.scatter([model_dir.primary2[0]], [model_dir.primary2[1]],
                    s=55, c=_MOON_C, zorder=5, label="Moon")
-    ax_dir.plot(xs_true[:k_tc+1, 0], xs_true[:k_tc+1, 1],
-                color=_AMBER, lw=1.4, ls="--", alpha=0.85, label="truth arc")
 
     unobs_pos_xy = eigvecs_final[:2, 0]
     pos_norm = float(np.linalg.norm(unobs_pos_xy))
@@ -965,7 +993,7 @@ def main() -> None:
         unobs_xy  = unobs_pos_xy / pos_norm
         traj_span = max(float(np.ptp(xs_true[:k_tc+1, 0])),
                         float(np.ptp(xs_true[:k_tc+1, 1])), 1e-10)
-        arrow_len = 0.07 * traj_span
+        arrow_len = 0.10 * traj_span
         mid_k = k_tc // 2
         ax0, ay0 = float(xs_true[mid_k, 0]), float(xs_true[mid_k, 1])
         ax_dir.annotate(
@@ -974,21 +1002,27 @@ def main() -> None:
             xytext=(ax0 - unobs_xy[0] * arrow_len, ay0 - unobs_xy[1] * arrow_len),
             arrowprops=dict(arrowstyle="<->", color=_RED, lw=2.2),
         )
+        # Label pinned to the top-right corner (axes fraction) so it never
+        # collides with the trajectory.
         ax_dir.text(
-            ax0 + unobs_xy[0] * arrow_len * 1.25,
-            ay0 + unobs_xy[1] * arrow_len * 1.25,
-            f"least obs.\n({unobs_xy[0]:+.2f}, {unobs_xy[1]:+.2f})",
-            color=_RED, fontsize=8, ha="center", va="center",
+            0.97, 0.97,
+            f"least-obs. direction\n({unobs_xy[0]:+.2f}, {unobs_xy[1]:+.2f})",
+            transform=ax_dir.transAxes,
+            color=_RED, fontsize=8, ha="right", va="top",
+            bbox=dict(facecolor=_BG, edgecolor=_BORDER, alpha=0.85, pad=4),
         )
 
-    ax_dir.set_aspect("equal", adjustable="box")
+    # "equal" aspect with datalim keeps the subplot rectangle at its grid
+    # size — "box" was compressing the whole subplot when the x- and y-ranges
+    # differed by orders of magnitude, making the title unreadable.
+    ax_dir.set_aspect("equal", adjustable="datalim")
     ax_dir.set_title(
         "Unobservable Direction  (λ_min eigvec, position projection)",
         color=_TEXT,
     )
     ax_dir.set_xlabel("x  [dimensionless CR3BP length]", color=_TEXT)
     ax_dir.set_ylabel("y  [dimensionless CR3BP length]", color=_TEXT)
-    ax_dir.legend(fontsize=8)
+    ax_dir.legend(fontsize=8, loc="lower left")
 
     # --- [1,1] Rolling acceptance rate per arc --------------------------------
     # Smoothed over a sliding window so you can see how gate acceptance varies

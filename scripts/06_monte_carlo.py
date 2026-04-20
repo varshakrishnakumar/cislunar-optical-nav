@@ -96,6 +96,7 @@ def _build_config(args: argparse.Namespace) -> Any:
         preset["dropout_prob"] = float(args.dropout_prob)
     if args.camera_mode  is not None:
         preset["camera_mode"]  = str(args.camera_mode)
+    preset["q_acc"] = float(args.q_acc)
 
     import dataclasses
     valid_fields = {f.name for f in dataclasses.fields(MonteCarloConfig)}
@@ -191,9 +192,13 @@ def _plot_hist(
     color: str = _CYAN,
     tol: Optional[float] = None,
     xmin_zero: bool = True,
+    xlim: Optional[tuple[float, float]] = None,
 ) -> None:
     outpath.parent.mkdir(parents=True, exist_ok=True)
     vals = vals[np.isfinite(vals)]
+    if xlim is not None:
+        lo, hi = xlim
+        vals = vals[(vals >= lo) & (vals <= hi)]
 
     fig, ax = plt.subplots(figsize=(9, 5))
     fig.patch.set_facecolor(_BG)
@@ -232,19 +237,22 @@ def _plot_hist(
 
     mu_v  = float(np.mean(vals))
     std_v = float(np.std(vals))
-    _glow_vline(ax, mu_v, _AMBER, lw=1.6, ls="--")
-    _glow_vline(ax, mu_v - std_v, _VIOLET, lw=1.2, ls=":")
-    _glow_vline(ax, mu_v + std_v, _VIOLET, lw=1.2, ls=":")
+    med_v = float(np.median(vals))
+    _glow_vline(ax, med_v, _AMBER, lw=1.8, ls="-")
+    _glow_vline(ax, mu_v, _VIOLET, lw=1.2, ls="--")
 
     if tol is not None:
         _glow_vline(ax, tol, _GREEN, lw=1.2, ls="-.")
 
+    p05 = float(np.percentile(vals, 5))
     p95 = float(np.percentile(vals, 95))
     lines = [
-        f"n     = {vals.size}",
-        f"μ     = {mu_v:.3e}",
-        f"σ     = {std_v:.3e}",
-        f"p95   = {p95:.3e}",
+        f"n      = {vals.size}",
+        f"median = {med_v:.3e}",
+        f"p05    = {p05:.3e}",
+        f"p95    = {p95:.3e}",
+        f"μ      = {mu_v:.3e}",
+        f"σ      = {std_v:.3e}",
     ]
     if tol is not None:
         sr = float(np.mean(vals < tol))
@@ -257,7 +265,9 @@ def _plot_hist(
     ax.set_xlabel(xlabel, color=_TEXT, labelpad=6)
     ax.set_ylabel("count", color=_TEXT, labelpad=6)
     ax.set_title(title, color=_TEXT, pad=10, fontweight="bold")
-    if xmin_zero:
+    if xlim is not None:
+        ax.set_xlim(*xlim)
+    elif xmin_zero:
         ax.set_xlim(left=max(0, edges[0]))
 
     fig.tight_layout()
@@ -417,6 +427,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--dropout-prob", type=float, default=None)
     p.add_argument("--camera-mode",  type=str,   default=None,
                    help="estimate_tracking | fixed")
+    p.add_argument("--q-acc",        type=float, default=1e-14,
+                   help="EKF process-noise density (ND CR3BP units).")
 
     return p.parse_args()
 
@@ -466,7 +478,7 @@ def main() -> None:
         return np.array(out, dtype=float)
 
     dv_delta     = _arr("dv_delta_mag")
-    dv_infl      = _arr("dv_inflation")
+    dv_bias      = _arr("dv_mag_bias")
     dv_infl_pct  = _arr("dv_inflation_pct") * 100.0
     miss_ekf     = _arr("miss_ekf")
     pos_err_tc   = _arr("pos_err_tc")
@@ -493,23 +505,25 @@ def main() -> None:
     )
 
     _plot_hist(
-        dv_infl,
-        xlabel="Δv inflation  [dimensionless CR3BP velocity]",
-        title=f"ΔV Inflation  ·  {config.study_name}  (n={n})",
-        outpath=plots_dir / "06c_hist_dv_inflation.png",
+        dv_bias,
+        xlabel="|Δv_EKF| − |Δv_perfect|  [dimensionless CR3BP velocity]",
+        title=f"Burn-Magnitude Bias  ·  {config.study_name}  (n={n})",
+        outpath=plots_dir / "06c_hist_dv_mag_bias.png",
         color=_CYAN,
         tol=None,
         xmin_zero=False,
     )
 
+    # Clip to [-100, 500] %: above that is ratio-blowup (tiny |Δv_perfect|).
     _plot_hist(
         dv_infl_pct,
         xlabel="(|Δv_EKF| / |Δv_perfect| − 1) × 100  [%]",
-        title=f"Relative ΔV Inflation vs Perfect-Information Burn  ·  {config.study_name}  (n={n})",
+        title=f"Relative ΔV Inflation  ·  {config.study_name}  (n={n}, clipped)",
         outpath=plots_dir / "06c_hist_dv_inflation_pct.png",
         color=_AMBER,
         tol=None,
         xmin_zero=False,
+        xlim=(-100.0, 500.0),
     )
 
     _plot_hist(
@@ -592,6 +606,7 @@ def main() -> None:
             dx0=dx0,
             est_err=est_err,
             camera_mode=config.camera_mode,
+            q_acc=float(getattr(config, "q_acc", 1e-14)),
         )
         representative_plot = plots_dir / "06c_representative_trial_orbit.png"
         _plot_representative_orbit(
@@ -603,11 +618,15 @@ def main() -> None:
 
     print("=== 06C Summary " + "=" * 46)
     print(f"  trials            : {summary.get('n', n)}")
-    print(f"  mean dv_delta_mag : {float(np.nanmean(dv_delta)):.4e}"
-          f"  (σ {float(np.nanstd(dv_delta)):.4e})")
-    print(f"  mean dv_inflation : {_summary_stat('dv_inflation', 'mean'):.4e}"
-          f"  (σ {_summary_stat('dv_inflation', 'std'):.4e})")
-    print(f"  p95  miss_ekf     : {_summary_stat('miss_ekf', 'p95'):.4e}")
+    print(f"  |Δdv|   median={_summary_stat('dv_delta_mag', 'median'):.3e}  "
+          f"p95={_summary_stat('dv_delta_mag', 'p95'):.3e}")
+    print(f"  bias    median={_summary_stat('dv_mag_bias',  'median'):+.3e}  "
+          f"p95={_summary_stat('dv_mag_bias',  'p95'):+.3e}")
+    infl_med = _summary_stat('dv_inflation_pct', 'median') * 100.0
+    infl_p95 = _summary_stat('dv_inflation_pct', 'p95')    * 100.0
+    print(f"  infl %  median={infl_med:.1f}%  p95={infl_p95:.1f}%")
+    print(f"  miss    median={_summary_stat('miss_ekf', 'median'):.3e}  "
+          f"p95={_summary_stat('miss_ekf', 'p95'):.3e}")
     if "success_rate" in summary:
         print(f"  success_rate      : {summary['success_rate']:.3f}"
               f"  (tol={args.tol:g})")
@@ -617,7 +636,7 @@ def main() -> None:
     print(f"  CSV  : {csv_path}")
     plot_names = [
         "06c_hist_dv_delta_mag.png",
-        "06c_hist_dv_inflation.png",
+        "06c_hist_dv_mag_bias.png",
         "06c_hist_dv_inflation_pct.png",
         "06c_hist_miss_ekf.png",
         "06c_hist_valid_measurement_rate.png",

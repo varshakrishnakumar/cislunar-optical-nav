@@ -97,6 +97,8 @@ def plot_xy(
     outpath: str | Path,
     color: str = CYAN,
     marker_color: str = AMBER,
+    logx: bool = False,
+    logy: bool = False,
 ) -> Path:
     apply_dark_theme()
     outpath = Path(outpath)
@@ -105,8 +107,49 @@ def plot_xy(
     fig, ax = plt.subplots(figsize=(8, 4.5))
     fig.patch.set_facecolor(BG)
     style_axis(ax, title=title, xlabel=xlabel, ylabel=ylabel)
+    if logx:
+        ax.set_xscale("log")
+    if logy:
+        ax.set_yscale("log")
     ax.plot(x, y, color=color, lw=2.0, zorder=3)
     ax.scatter(x, y, s=50, color=marker_color, zorder=4, edgecolors=BG, lw=0.5)
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=200, facecolor=BG)
+    plt.close(fig)
+    return outpath
+
+
+def plot_xy_band(
+    x: np.ndarray,
+    y_med: np.ndarray,
+    y_lo: np.ndarray,
+    y_hi: np.ndarray,
+    *,
+    xlabel: str,
+    ylabel: str,
+    title: str,
+    outpath: str | Path,
+    color: str = CYAN,
+    marker_color: str = AMBER,
+    band_label: str = "p05-p95 band",
+    logx: bool = False,
+    logy: bool = False,
+) -> Path:
+    apply_dark_theme()
+    outpath = Path(outpath)
+    outpath.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    fig.patch.set_facecolor(BG)
+    style_axis(ax, title=title, xlabel=xlabel, ylabel=ylabel)
+    if logx:
+        ax.set_xscale("log")
+    if logy:
+        ax.set_yscale("log")
+    ax.fill_between(x, y_lo, y_hi, color=color, alpha=0.18, label=band_label)
+    ax.plot(x, y_med, color=color, lw=2.0, zorder=3, label="median")
+    ax.scatter(x, y_med, s=50, color=marker_color, zorder=5, edgecolors=BG, lw=0.5)
+    ax.legend(fontsize=9)
     fig.tight_layout()
     fig.savefig(outpath, dpi=200, facecolor=BG)
     plt.close(fig)

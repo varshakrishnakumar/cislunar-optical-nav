@@ -66,6 +66,8 @@ def _run_point(
             mu, t0, tf, tc, dt_meas, sigma_px, dropout_prob, seed_j,
             dx0, est_err,
             camera_mode="fixed" if fixed_camera_pointing else "estimate_tracking",
+            return_debug=False,
+            accumulate_gramian=False,
         )
         dv_delta_vals.append(float(out.get("dv_delta_mag", np.nan)))
         miss_vals.append(float(out.get("miss_ekf",         np.nan)))

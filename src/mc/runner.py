@@ -95,6 +95,9 @@ def run_monte_carlo(
             dx0=dx0,
             est_err=est_err,
             camera_mode=config.camera_mode,
+            q_acc=float(getattr(config, "q_acc", 1e-14)),
+            return_debug=False,
+            accumulate_gramian=False,
         )
 
         if accepted_keys is None:

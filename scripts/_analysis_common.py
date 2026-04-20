@@ -26,6 +26,7 @@ from visualization.style import (  # noqa: E402
     VIOLET,
     apply_dark_theme,
     plot_xy,
+    plot_xy_band,
     plot_xy_with_err,
 )
 

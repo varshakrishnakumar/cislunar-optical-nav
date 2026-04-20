@@ -34,6 +34,8 @@ class MonteCarloConfig:
     planar_only: bool = False
     study_name: str = "mc_study"
 
+    q_acc: float = 1e-14
+
     def __post_init__(self) -> None:
         if not (0.0 < self.mu < 0.5):
             raise ValueError(f"mu must be in (0, 0.5), got {self.mu}")
@@ -73,7 +75,7 @@ class TrialResult:
     dv_perfect_mag: float
     dv_ekf_mag: float
     dv_delta_mag: float
-    dv_inflation: float
+    dv_mag_bias: float
     dv_inflation_pct: float
 
     miss_uncorrected: float

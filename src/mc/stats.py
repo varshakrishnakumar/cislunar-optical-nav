@@ -71,8 +71,9 @@ def summarize_results(
     summary["camera_mode"]  = r0.camera_mode
 
     _metrics = [
-        "dv_inflation",
+        "dv_mag_bias",
         "dv_inflation_pct",
+        "dv_delta_mag",
         "miss_ekf",
         "miss_uncorrected",
         "miss_perfect",
