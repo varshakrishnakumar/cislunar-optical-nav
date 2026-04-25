@@ -44,7 +44,7 @@ L_KM  = 384_400.0
 T_DAY = 4.343
 V_MS  = L_KM / (T_DAY * 86_400) * 1_000      # m/s per DU/TU
 
-OUT_DIR = Path("results/plots")
+OUT_DIR = Path("results/demos")
 TRAIL   = 220                                  # animated trail length in frames
 
 
@@ -143,6 +143,64 @@ def _draw_sphere(ax, center, radius, color, *, alpha=0.9, n=28, zorder=5):
     ax.plot_surface(
         x, y, z, color=color, alpha=alpha,
         linewidth=0, antialiased=True, shade=True, zorder=zorder,
+    )
+
+
+def _draw_textured_sphere(ax, center, radius, texture_path, *,
+                          n=80, alpha=1.0, zorder=5, rotate_lon_deg=0.0):
+    """Map an equirectangular texture onto a 3D sphere via plot_surface.
+
+    Texture sampling happens once at setup; matplotlib reuses the face-
+    color grid every frame, so the per-frame cost is just geometry
+    projection (same as a solid sphere). Use for a static Moon where
+    the view rotates but the body itself doesn't move.
+    """
+    import matplotlib.image as mpimg
+
+    try:
+        img = mpimg.imread(str(texture_path))
+    except Exception as exc:
+        print(f"  texture load failed ({exc}); falling back to solid Moon")
+        _draw_sphere(ax, center, radius, _MOON_C, alpha=alpha, n=max(n // 2, 28),
+                     zorder=zorder)
+        return
+
+    if img.ndim == 2:
+        img = np.stack([img, img, img], axis=-1)
+    if img.dtype.kind in ("u", "i"):
+        img = img.astype(np.float32) / 255.0
+    H, W = img.shape[:2]
+
+    # Sphere vertex grid  (u=longitude, v=polar angle from +z)
+    u = np.linspace(0.0, 2.0 * np.pi, n)
+    v = np.linspace(0.0, np.pi, n)
+    cu, su = np.cos(u), np.sin(u)
+    cv, sv = np.cos(v), np.sin(v)
+    x = center[0] + radius * np.outer(cu, sv)
+    y = center[1] + radius * np.outer(su, sv)
+    z = center[2] + radius * np.outer(np.ones_like(u), cv)
+
+    # Face-center samples for (n-1)×(n-1) quad faces
+    uu_f = 0.5 * (u[:-1] + u[1:])
+    vv_f = 0.5 * (v[:-1] + v[1:])
+    U, V = np.meshgrid(uu_f, vv_f, indexing="ij")
+
+    # Longitude → image column (with optional rotation of the Moon
+    # about its polar axis so the familiar near-side faces the camera).
+    lon = (U + np.radians(rotate_lon_deg)) % (2.0 * np.pi)
+    px = np.clip((lon / (2.0 * np.pi) * W).astype(int), 0, W - 1)
+    py = np.clip((V   /         np.pi * H).astype(int), 0, H - 1)
+
+    face_rgb   = img[py, px, :3]
+    face_rgba  = np.empty(face_rgb.shape[:2] + (4,), dtype=float)
+    face_rgba[..., :3] = face_rgb
+    face_rgba[..., 3]  = float(alpha)
+
+    ax.plot_surface(
+        x, y, z,
+        facecolors=face_rgba,
+        linewidth=0, antialiased=False, shade=False,
+        rstride=1, cstride=1, zorder=zorder,
     )
 
 
@@ -272,6 +330,14 @@ def _data2(mu, model, x0):
 
 # ── Phase 3: bearing-only EKF data ────────────────────────────────────────────
 def _data3(mu, model, x0):
+    """EKF data in 3D with smooth interpolation for animation.
+
+    Runs the filter on the sparse measurement grid (dt=0.02 TU), then
+    resamples truth + estimate to a dense time grid so the animation
+    pans smoothly instead of stepping through discrete measurement ticks.
+    """
+    from scipy.interpolate import CubicSpline
+
     rng    = np.random.default_rng(0)
     r_body = np.asarray(model.primary2, dtype=float)
     t0, tf, dt = 0.0, 6.0, 0.02
@@ -281,22 +347,23 @@ def _data3(mu, model, x0):
     x_true0[:3] += [2e-4, -1e-4, 0.]
     x_true0[3:]  += [0., 2e-3, 0.]
 
-    res = propagate(model.eom, (t0, tf), x_true0, t_eval=t_meas, rtol=1e-11, atol=1e-13)
-    X_true = res.x
+    res = propagate(model.eom, (t0, tf), x_true0, t_eval=t_meas,
+                    rtol=1e-11, atol=1e-13, dense_output=True)
+    X_true_meas = res.x
 
     sig = 2e-4
     U_meas = np.array([
-        _ang_noise(los_unit(r_body, X_true[k, :3])[0], sig, rng)
+        _ang_noise(los_unit(r_body, X_true_meas[k, :3])[0], sig, rng)
         for k in range(len(t_meas))
     ])
 
     x = x0.copy()
     P = np.diag([1e-6] * 3 + [1e-8] * 3).astype(float)
     N = len(t_meas)
-    X_hat  = np.zeros((N, 6))
+    X_hat_meas = np.zeros((N, 6))
     nis    = np.full(N, np.nan)
     P_diag = np.zeros((N, 6))
-    X_hat[0] = x; P_diag[0] = np.diag(P)
+    X_hat_meas[0] = x; P_diag[0] = np.diag(P)
     t_prev = t_meas[0]
 
     for k in range(1, N):
@@ -306,21 +373,42 @@ def _data3(mu, model, x0):
         if upd.accepted:
             x, P = upd.x_upd, upd.P_upd
         nis[k]    = upd.nis
-        X_hat[k]  = x
+        X_hat_meas[k]  = x
         P_diag[k] = np.diag(P)
         t_prev    = tk
 
-    pos_err = np.linalg.norm(X_hat[:, :3] - X_true[:, :3], axis=1) * L_KM   # km
-    sig3    = 3.0 * np.sqrt(np.abs(P_diag[:, 0])) * L_KM                    # km
+    # Dense resample for smooth animation (truth via dense_output, EKF via spline)
+    N_dense = 900
+    t_dense = np.linspace(t0, tf, N_dense)
+    X_true_dense = res.sol(t_dense).T                     # (N_dense, 6)
+    spl_hat = CubicSpline(t_meas, X_hat_meas, axis=0, bc_type="natural")
+    X_hat_dense = spl_hat(t_dense)
+
+    pos_err_dense = np.linalg.norm(
+        X_hat_dense[:, :3] - X_true_dense[:, :3], axis=1) * L_KM
+    spl_sig = CubicSpline(t_meas, np.sqrt(np.abs(P_diag[:, 0])),
+                          axis=0, bc_type="natural")
+    sig3_dense = 3.0 * spl_sig(t_dense) * L_KM
+
+    # Map each dense tick to nearest measurement for NIS look-ups
+    meas_idx_per_dense = np.searchsorted(t_meas, t_dense)
+    meas_idx_per_dense = np.clip(meas_idx_per_dense, 0, N - 1)
 
     return dict(
-        t=t_meas * T_DAY,
-        X_true=X_true[:, :2] * L_KM,
-        X_hat=X_hat[:, :2] * L_KM,
-        X_true_raw=X_true,
-        pos_err=pos_err, sig3=sig3, nis=nis,
+        # dense arrays for the animated orbit + side panels
+        t=t_dense * T_DAY,
+        X_true=X_true_dense[:, :3] * L_KM,
+        X_hat=X_hat_dense[:, :3] * L_KM,
+        pos_err=pos_err_dense,
+        sig3=sig3_dense,
+        # measurement-time arrays for NIS scatter + LOS pulses
+        t_meas=t_meas * T_DAY,
+        nis=nis,
+        meas_idx_per_dense=meas_idx_per_dense,
+        # geometry
         r_body=r_body,
-        p2=model.primary2[:2] * L_KM,
+        p2=model.primary2[:3] * L_KM if model.primary2.size >= 3
+           else np.array([*model.primary2[:2], 0.0]) * L_KM,
     )
 
 
@@ -523,14 +611,10 @@ def animate_phase2_follow_cam(fps: int = 30, sim_speed: float = 0.77) -> None:
 
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3D proj)
 
-    fig = plt.figure(figsize=(17, 8.5), facecolor=_BG)
-    gs = gridspec.GridSpec(
-        1, 2, figure=fig,
-        width_ratios=[3, 2], wspace=0.22,
-        left=0.04, right=0.97, bottom=0.09, top=0.91,
-    )
-    ax = fig.add_subplot(gs[0], projection="3d")
-    ax_mis = fig.add_subplot(gs[1])
+    fig = plt.figure(figsize=(10, 12), facecolor=_BG)
+    # Stacked layout: 3D follow-cam on top, miss-distance panel below.
+    ax     = fig.add_axes([0.02, 0.46, 0.96, 0.48], projection="3d")
+    ax_mis = fig.add_axes([0.10, 0.07, 0.85, 0.24])
     ax.set_facecolor(_BG)
 
     # Dark theme for 3D axes + dimmed grid (≈75% opacity reduction)
@@ -546,9 +630,16 @@ def animate_phase2_follow_cam(fps: int = 30, sim_speed: float = 0.77) -> None:
     ax.set_ylabel("y  [km]", labelpad=6, fontsize=8)
     ax.set_zlabel("z  [km]", labelpad=6, fontsize=8)
 
-    # Earth & Moon (exaggerated radii for legibility)
+    # Earth & Moon (exaggerated radii for legibility). Moon uses the
+    # equirectangular texture at results/seeds/moon_texture.jpg for a
+    # recognisable lunar surface; Earth stays a solid blue sphere.
     _draw_sphere(ax, d["p1"], 9_000.0, _EARTH_C, alpha=0.95)
-    _draw_sphere(ax, d["p2"], 5_000.0, _MOON_C,  alpha=0.90)
+    _MOON_TEX = Path("results/seeds/moon_texture.jpg")
+    if _MOON_TEX.exists():
+        _draw_textured_sphere(ax, d["p2"], 5_000.0, _MOON_TEX,
+                              n=72, alpha=1.0, rotate_lon_deg=180.0)
+    else:
+        _draw_sphere(ax, d["p2"], 5_000.0, _MOON_C, alpha=0.90)
 
     # Target marker
     ax.scatter([d["r_target"][0]], [d["r_target"][1]], [d["r_target"][2]],
@@ -579,14 +670,31 @@ def animate_phase2_follow_cam(fps: int = 30, sim_speed: float = 0.77) -> None:
                          depthshade=False)
 
     # HUD overlays (figure-space text)
-    hud_title = fig.text(0.025, 0.955, "", color=_TEXT, fontsize=13,
+    hud_title = fig.text(0.025, 0.968, "", color=_TEXT, fontsize=13,
                          fontweight="bold", family="monospace")
-    hud_sub   = fig.text(0.025, 0.922, "", color=_DIM,  fontsize=9.5,
+    hud_sub   = fig.text(0.025, 0.946, "", color=_DIM,  fontsize=9.5,
                          family="monospace")
-    hud_dv    = fig.text(0.025, 0.060, "", color=_RED,  fontsize=10,
+    hud_dv    = fig.text(0.025, 0.335, "", color=_RED,  fontsize=10,
                          fontweight="bold", family="monospace")
-    hud_foot  = fig.text(0.025, 0.035, "Follow-cam · orbital sweep tightens at burn",
-                         color=_DIM, fontsize=8, family="monospace")
+
+    # Static marker legend (between panels) — names the 3D glyphs
+    _leg_x_sym, _leg_x_txt = 0.025, 0.050
+    fig.text(_leg_x_sym, 0.440, "◆", color=_RED,   fontsize=13,
+             fontweight="bold", family="monospace")
+    fig.text(_leg_x_txt, 0.442, "midcourse ΔV burn point",
+             color=_TEXT, fontsize=8.5, family="monospace")
+    fig.text(_leg_x_sym, 0.415, "★", color=_AMBER, fontsize=13,
+             fontweight="bold", family="monospace")
+    fig.text(_leg_x_txt, 0.417, "target state",
+             color=_TEXT, fontsize=8.5, family="monospace")
+    fig.text(_leg_x_sym, 0.390, "●", color=_AMBER, fontsize=13,
+             fontweight="bold", family="monospace")
+    fig.text(_leg_x_txt, 0.392, "off-nominal truth",
+             color=_TEXT, fontsize=8.5, family="monospace")
+    fig.text(_leg_x_sym, 0.365, "●", color=_CYAN,  fontsize=13,
+             fontweight="bold", family="monospace")
+    fig.text(_leg_x_txt, 0.367, "EKF-corrected arc",
+             color=_TEXT, fontsize=8.5, family="monospace")
 
     # ── Miss-distance panel (right) ──────────────────────────────────────────
     _dark(ax_mis,
@@ -613,22 +721,35 @@ def animate_phase2_follow_cam(fps: int = 30, sim_speed: float = 0.77) -> None:
 
     # Camera state — exponential smoothing for center / half-width
     tc_days    = float(d["tc"])
+    t_total    = float(d["t"][-1])
     azim0      = 38.0
-    azim_rate  = 0.28               # deg per frame → ~85° over 300 frames
-    elev_start = 32.0
-    elev_end   = 16.0
+    azim_sweep = 78.0               # total azimuth travel across the shot
+    elev_start = 34.0
+    elev_mid   = 22.0
+    elev_end   = 15.0
     D_floor    = 22_000.0           # km; hard lower bound on zoom
     D_ceiling  = 120_000.0
-    smooth_a   = 0.88               # EMA retention for center / D
+    D_wide     = 78_000.0           # establishing dolly-out peak
+    D_tight    = 28_000.0           # post-burn intimate framing
+    smooth_D   = 0.96               # EMA retention for half-width (slow zoom)
+    smooth_c   = 0.935              # EMA retention for center (pan)
+    preroll_frames = 8              # hold on frame 0 for an establishing beat
 
     cam_state = {"D": None, "center": None}
 
     burn_fired = [False]
     burn_xyz   = [None]
 
-    def _apply_view(frame_i, frac):
-        elev = elev_start * (1.0 - frac) + elev_end * frac
-        azim = azim0 + azim_rate * frame_i
+    def _apply_view(t_n, frac):
+        # Elevation eases: high → mid before burn, mid → low after
+        pre  = _smoothstep(t_n, 0.0, tc_days)
+        post = _smoothstep(t_n, tc_days, tc_days + 1.5)
+        elev = (elev_start * (1.0 - pre) + elev_mid * pre) * (1.0 - post) \
+               + elev_end * post
+        # Azimuth: fast sweep-in pre-burn, gentle settle post-burn
+        az_pre  = _smoothstep(t_n, 0.0, tc_days)                # 0 → 1 by burn
+        az_post = _smoothstep(t_n, tc_days, t_total)            # 0 → 1 over rest
+        azim = azim0 + azim_sweep * (0.65 * az_pre + 0.35 * az_post)
         ax.view_init(elev=elev, azim=azim)
 
     def init_fc():
@@ -644,7 +765,10 @@ def animate_phase2_follow_cam(fps: int = 30, sim_speed: float = 0.77) -> None:
         return glow_u, line_u, glow_c, line_c, dot_u, dot_c, burn_sc
 
     def update_fc(frame):
-        i  = min(frame * speed, N - 1)
+        # Pre-roll hold: freeze on frame 0 for the first few frames so the
+        # opening reads as a settled establishing shot rather than mid-motion.
+        eff = max(0, frame - preroll_frames)
+        i  = min(eff * speed, N - 1)
         i0 = max(0, i - TRAIL)
         t_n = float(d["t"][i])
 
@@ -689,19 +813,27 @@ def animate_phase2_follow_cam(fps: int = 30, sim_speed: float = 0.77) -> None:
 
         frac = _smoothstep(t_n, tc_days - 1.2, tc_days + 0.6)
 
-        # Target camera center: lerp toward spacecraft as burn fires
+        # Scheduled zoom — decoupled from instantaneous distance so small
+        # per-frame wiggles don't breathe the camera. Dolly-out early for an
+        # establishing beat, then smoothly push in through the burn.
+        dolly_out  = _smoothstep(t_n, 0.0, tc_days * 0.45)     # 0 → 1 over opener
+        dolly_in   = _smoothstep(t_n, tc_days * 0.45, tc_days + 0.9)  # pushes in
+        target_D   = (D_floor * (1.0 - dolly_out) + D_wide * dolly_out) * (1.0 - dolly_in) \
+                     + D_tight * dolly_in
+        # Gentle safety net in case spacecraft wanders far from target
+        target_D   = max(target_D, 0.85 * dist + 6_000.0)
+        target_D   = float(np.clip(target_D, D_floor, D_ceiling))
+
+        # Camera center: bias toward target pre-burn, toward spacecraft post-burn
         target_center = (1.0 - 0.6 * frac) * mid + (0.6 * frac) * sc
-        # Target half-width: auto-fit to sc↔target distance, tightened by frac
-        target_D = max(D_floor, dist * (1.55 - 0.55 * frac) + 9_000.0)
-        target_D = min(target_D, D_ceiling)
 
         if cam_state["D"] is None:
             cam_state["D"] = target_D
             cam_state["center"] = target_center.copy()
         else:
-            cam_state["D"] = smooth_a * cam_state["D"] + (1 - smooth_a) * target_D
-            cam_state["center"] = (smooth_a * cam_state["center"]
-                                   + (1 - smooth_a) * target_center)
+            cam_state["D"] = smooth_D * cam_state["D"] + (1 - smooth_D) * target_D
+            cam_state["center"] = (smooth_c * cam_state["center"]
+                                   + (1 - smooth_c) * target_center)
 
         D = cam_state["D"]
         cx, cy, cz = cam_state["center"]
@@ -710,7 +842,7 @@ def animate_phase2_follow_cam(fps: int = 30, sim_speed: float = 0.77) -> None:
         ax.set_zlim(cz - D * 0.55, cz + D * 0.55)
         ax.set_box_aspect((1.0, 1.0, 0.55))
 
-        _apply_view(frame, frac)
+        _apply_view(t_n, frac)
 
         # Miss-distance panel updates
         mis_vline.set_xdata([t_n])
@@ -738,7 +870,7 @@ def animate_phase2_follow_cam(fps: int = 30, sim_speed: float = 0.77) -> None:
         return (glow_u, line_u, glow_c, line_c, dot_u, dot_c, burn_sc,
                 hud_title, hud_sub, hud_dv, mis_vline, mis_dot_u, mis_dot_c)
 
-    n_frames = int(np.ceil(N / speed)) + 50
+    n_frames = int(np.ceil(N / speed)) + 50 + preroll_frames
     ani = FuncAnimation(fig, update_fc, frames=n_frames, init_func=init_fc,
                         blit=False, interval=1000 // fps)
     _try_save(ani, OUT_DIR / "anim_02_targeting_follow_cam.mp4", fps)
@@ -747,174 +879,237 @@ def animate_phase2_follow_cam(fps: int = 30, sim_speed: float = 0.77) -> None:
 
 # ── Phase 3 animation ──────────────────────────────────────────────────────────
 def animate_phase3(fps: int = 30, sim_speed: float = 0.77) -> None:
-    print("Phase 3: running EKF …")
+    """3D cislunar bearing-only EKF navigation animation.
+
+    Left panel: 3D orbit view with Moon sphere, smooth trajectory traces
+    (truth + EKF estimate), animated LOS rays that pulse on measurement
+    events, and a slowly-rotating camera. Data is densely interpolated
+    so panning is continuous instead of stepping through sparse updates.
+
+    Right panels: position estimation error (log, with 3σ envelope) and
+    NIS with χ²(2) 95% band.
+    """
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3D proj
+
+    print("Phase 3 · running EKF + building dense trajectories …")
     mu, model, x0 = _setup()
     d = _data3(mu, model, x0)
-    N  = len(d["t"])
+    N = len(d["t"])
+
+    # Playback rate: advance `speed` dense ticks per video frame.
+    # sim_speed here is a rate multiplier — 1.0 means real time.
     dt_f = float(d["t"][1] - d["t"][0])
     speed = max(1, round(sim_speed * T_DAY / (fps * dt_f)))
 
-    NIS_LO = float(chi2.ppf(0.025, df=2))   # ≈ 0.05
-    NIS_HI = float(chi2.ppf(0.975, df=2))   # ≈ 7.38
+    NIS_LO = float(chi2.ppf(0.025, df=2))
+    NIS_HI = float(chi2.ppf(0.975, df=2))
 
-    # ── figure layout: orbit | (error / NIS) ──
-    fig = plt.figure(figsize=(17, 8.5), facecolor=_BG)
-    gs  = gridspec.GridSpec(
-        2, 2, figure=fig,
-        width_ratios=[3, 2], height_ratios=[1, 1],
-        wspace=0.28, hspace=0.38,
-        left=0.07, right=0.97, bottom=0.10, top=0.91,
-    )
-    ax_orb = fig.add_subplot(gs[:, 0])      # full left column
-    ax_err = fig.add_subplot(gs[0, 1])      # top right: position error
-    ax_nis = fig.add_subplot(gs[1, 1])      # bottom right: NIS
+    # ── figure layout ────────────────────────────────────────────────
+    # Explicit axes positioning keeps the 3D panel from losing space to
+    # matplotlib's perspective padding (which is what made the old
+    # gridspec-driven layout look empty).
+    fig = plt.figure(figsize=(18, 9), facecolor=_BG)
+    # 3D orbit: big, left-of-center, generously padded
+    ax_orb = fig.add_axes([-0.05, 0.02, 0.78, 0.92], projection="3d")
+    # Right-column 2D panels
+    ax_err = fig.add_axes([0.66, 0.57, 0.31, 0.34])
+    ax_nis = fig.add_axes([0.66, 0.12, 0.31, 0.34])
 
-    # ── orbit axes (zoom-follow) ──
-    ZOOM_KM = 22_000
-    cx0, cy0 = float(d["X_true"][0, 0]), float(d["X_true"][0, 1])
-    ax_orb.set_xlim(cx0 - ZOOM_KM, cx0 + ZOOM_KM)
-    ax_orb.set_ylim(cy0 - ZOOM_KM, cy0 + ZOOM_KM)
-    _dark(ax_orb,
-          title="Bearing-Only EKF — Near-L1 State Estimation",
-          xlabel="x  [km from barycenter]",
-          ylabel="y  [km from barycenter]")
-    _stars(ax_orb, n=280,
-           seed=7)  # stars drawn after setting initial limits
+    # ── 3D orbit axes dark theme ─────────────────────────────────────
+    ax_orb.set_facecolor(_BG)
+    pane_rgba = (0.020, 0.031, 0.063, 1.0)
+    grid_rgba = (0.10, 0.13, 0.25, 0.22)
+    for axis in (ax_orb.xaxis, ax_orb.yaxis, ax_orb.zaxis):
+        axis.set_pane_color(pane_rgba)
+        axis.label.set_color(_TEXT)
+        axis._axinfo["grid"]["color"] = grid_rgba
+        axis._axinfo["grid"]["linewidth"] = 0.35
+    ax_orb.tick_params(colors=_DIM, labelsize=7)
+    ax_orb.set_xlabel("x  [km]", labelpad=6, fontsize=8)
+    ax_orb.set_ylabel("y  [km]", labelpad=6, fontsize=8)
+    ax_orb.set_zlabel("z  [km]", labelpad=6, fontsize=8)
 
-    # Moon label (may be off-screen, shown as annotation)
-    ax_orb.text(0.98, 0.96, f"Moon at x = {float(d['p2'][0]):,.0f} km →",
-                transform=ax_orb.transAxes, color=_MOON_C,
-                fontsize=7.5, ha="right", va="top")
+    # Moon — textured sphere from the repo's moon_texture.jpg; radius is
+    # exaggerated for legibility at cislunar scale. Texture is sampled once
+    # at setup so per-frame render cost matches a plain sphere.
+    _MOON_TEX = Path("results/seeds/moon_texture.jpg")
+    if _MOON_TEX.exists():
+        _draw_textured_sphere(ax_orb, d["p2"], 12_000.0, _MOON_TEX,
+                              n=80, alpha=1.0, rotate_lon_deg=180.0)
+    else:
+        _draw_sphere(ax_orb, d["p2"], 12_000.0, _MOON_C, alpha=0.95)
 
-    # Animated trails
-    gt, = ax_orb.plot([], [], color=_CYAN,  lw=7, alpha=0.09, zorder=3, solid_capstyle="round")
-    ct, = ax_orb.plot([], [], color=_CYAN,  lw=2, alpha=0.90, zorder=4, solid_capstyle="round")
-    dt  = ax_orb.scatter([], [], s=90, color=_CYAN, zorder=7,
-                          edgecolors=_WHITE, linewidths=0.5)
+    # Animated glow trails — truth (cyan) and estimate (amber)
+    glow_t, = ax_orb.plot([], [], [], color=_CYAN,  lw=7, alpha=0.11, zorder=4)
+    line_t, = ax_orb.plot([], [], [], color=_CYAN,  lw=2.3, alpha=0.95, zorder=5)
+    glow_h, = ax_orb.plot([], [], [], color=_AMBER, lw=7, alpha=0.09, zorder=4)
+    line_h, = ax_orb.plot([], [], [], color=_AMBER, lw=2.0, alpha=0.90, zorder=5, ls="--")
 
-    gh, = ax_orb.plot([], [], color=_AMBER, lw=7, alpha=0.09, zorder=3,
-                       solid_capstyle="round", ls="--")
-    ch, = ax_orb.plot([], [], color=_AMBER, lw=2, alpha=0.90, zorder=4,
-                       solid_capstyle="round", ls="--")
-    dh  = ax_orb.scatter([], [], s=70, color=_AMBER, zorder=7,
-                          edgecolors=_WHITE, linewidths=0.5, marker="s")
+    # Live spacecraft / estimate markers
+    dot_t = ax_orb.scatter([], [], [], s=110, color=_CYAN,  zorder=8,
+                           edgecolors=_WHITE, linewidths=0.6, depthshade=False)
+    dot_h = ax_orb.scatter([], [], [], s=90,  color=_AMBER, zorder=8,
+                           edgecolors=_WHITE, linewidths=0.6, depthshade=False,
+                           marker="s")
+    # LOS ray (pulses on measurement events)
+    los_line, = ax_orb.plot([], [], [], color=_VIOLET, lw=1.6, alpha=0.70,
+                            ls=":", zorder=3)
+    # Measurement-pulse halo (brief glow on accepted measurements)
+    pulse, = ax_orb.plot([], [], [], color=_GREEN, lw=10, alpha=0.0, zorder=6)
 
-    los_line, = ax_orb.plot([], [], color=_VIOLET, lw=1.0, alpha=0.55,
-                              ls=":", zorder=2)
+    # Axis limits — include Moon + trajectory; preserve true physical aspect
+    # (z-extent naturally much smaller than x,y for a near-planar halo, so we
+    # pick a box_aspect that roughly matches the real ranges rather than
+    # forcing [1,1,1], which wastes ~60% of the panel on empty z-space).
+    all_pts = np.vstack([d["X_true"], d["X_hat"], d["p2"][None, :]])
+    pad = 0.15 * (all_pts.max(axis=0) - all_pts.min(axis=0) + 1.0)
+    lo = all_pts.min(axis=0) - pad
+    hi = all_pts.max(axis=0) + pad
+    ranges = hi - lo
+    ax_orb.set_xlim(lo[0], hi[0]); ax_orb.set_ylim(lo[1], hi[1]); ax_orb.set_zlim(lo[2], hi[2])
+    try:
+        ax_orb.set_box_aspect(tuple(ranges / ranges.max()))
+    except Exception:
+        pass
 
-    orb_legend = [
-        plt.Line2D([], [], color=_CYAN,  lw=2, label="True trajectory"),
-        plt.Line2D([], [], color=_AMBER, lw=2, ls="--", label="EKF estimate"),
-        plt.Line2D([], [], color=_VIOLET, lw=1, ls=":", label="LOS to Moon"),
-    ]
-    ax_orb.legend(handles=orb_legend, fontsize=7.5, loc="upper left",
-                  facecolor=_PANEL, edgecolor=_BORDER, labelcolor=_TEXT)
+    # Static 3D legend (figure-space so it doesn't rotate with axes)
+    fig.text(0.015, 0.88, "● truth trajectory", color=_CYAN,
+             fontsize=10, family="monospace", fontweight="bold")
+    fig.text(0.015, 0.855, "■ IEKF estimate", color=_AMBER,
+             fontsize=10, family="monospace", fontweight="bold")
+    fig.text(0.015, 0.830, "┈ LOS to Moon", color=_VIOLET,
+             fontsize=10, family="monospace", fontweight="bold")
+    fig.text(0.015, 0.805, "● Moon target", color=_MOON_C,
+             fontsize=10, family="monospace", fontweight="bold")
 
-    # NIS indicator (live "MEAS" text)
-    meas_txt = ax_orb.text(0.02, 0.96, "", transform=ax_orb.transAxes,
-                            color=_GREEN, fontsize=8.5, va="top", fontweight="bold")
-
-    # ── position error axes ──
+    # ── position-error panel ─────────────────────────────────────────
     _dark(ax_err,
           title="Position Estimation Error",
           xlabel="Elapsed time  [days]",
           ylabel="‖r̂ − r_true‖  [km]")
     ax_err.set_yscale("log")
-    ax_err.plot(d["t"], d["pos_err"], color=_CYAN, lw=0.7, alpha=0.20)
+    ax_err.plot(d["t"], d["pos_err"], color=_CYAN, lw=0.7, alpha=0.18)
     ax_err.fill_between(d["t"], 1e-8, d["sig3"], color=_VIOLET, alpha=0.10, zorder=1)
     ax_err.plot([], [], color=_CYAN,   lw=2, label="‖r̂ − r‖")
     ax_err.plot([], [], color=_VIOLET, lw=6, alpha=0.35, label="3σ bound (x)")
     ax_err.legend(fontsize=7.5, loc="upper right",
                   facecolor=_PANEL, edgecolor=_BORDER, labelcolor=_TEXT)
-
+    # Use a fixed-y log range so the trace doesn't rescale mid-animation
+    pe_finite = d["pos_err"][np.isfinite(d["pos_err"]) & (d["pos_err"] > 0)]
+    if pe_finite.size:
+        ax_err.set_ylim(max(pe_finite.min() * 0.5, 1e-3), pe_finite.max() * 3.0)
     e_vline = ax_err.axvline(d["t"][0], color=_WHITE, lw=1.1, alpha=0.7)
-    e_dot,  = ax_err.plot([], [], "o", color=_CYAN, ms=6, zorder=5)
+    e_line, = ax_err.plot([], [], color=_CYAN, lw=2.0, zorder=5)
+    e_dot,  = ax_err.plot([], [], "o", color=_CYAN, ms=6, zorder=6)
 
-    # ── NIS axes ──
+    # ── NIS panel ────────────────────────────────────────────────────
     _dark(ax_nis,
-          title=f"Filter Consistency: Normalised Innovation Squared (NIS)",
+          title="Filter Consistency  ·  NIS vs χ²(2) gate",
           xlabel="Elapsed time  [days]",
-          ylabel="NIS  [χ²(2) distributed]")
-    ax_nis.fill_between(d["t"], NIS_LO, NIS_HI, color=_GREEN, alpha=0.10, zorder=1,
-                         label=f"95% χ²(2) band  [{NIS_LO:.2f}, {NIS_HI:.2f}]")
-    ax_nis.axhline(2.0, color=_GREEN, lw=0.8, ls="--", alpha=0.5)
-    ax_nis.set_ylim(-0.2, max(14.0, float(np.nanmax(d["nis"][np.isfinite(d["nis"])])) * 1.15))
+          ylabel="NIS")
+    ax_nis.fill_between([d["t"][0], d["t"][-1]], NIS_LO, NIS_HI,
+                        color=_GREEN, alpha=0.14, zorder=1,
+                        label=f"95% χ²(2) band  [{NIS_LO:.2f}, {NIS_HI:.2f}]")
+    ax_nis.axhline(2.0, color=_GREEN, lw=0.9, ls="--", alpha=0.55)
+    nis_fin = d["nis"][np.isfinite(d["nis"])]
+    ax_nis.set_ylim(-0.2, max(14.0, float(nis_fin.max()) * 1.10) if nis_fin.size else 14.0)
+    ax_nis.set_xlim(d["t"][0], d["t"][-1])
     ax_nis.legend(fontsize=7.5, loc="upper right",
                   facecolor=_PANEL, edgecolor=_BORDER, labelcolor=_TEXT)
-
     n_vline = ax_nis.axvline(d["t"][0], color=_WHITE, lw=1.1, alpha=0.7)
-
-    # pre-allocate scatter collection (grows each frame)
-    nis_dots_in,  = ax_nis.plot([], [], "o", color=_GREEN, ms=4, alpha=0.85, zorder=4)
-    nis_dots_out, = ax_nis.plot([], [], "o", color=_RED,   ms=4, alpha=0.85, zorder=4)
+    nis_dots_in,  = ax_nis.plot([], [], "o", color=_GREEN, ms=4.5, alpha=0.92, zorder=4)
+    nis_dots_out, = ax_nis.plot([], [], "o", color=_RED,   ms=4.5, alpha=0.92, zorder=4)
 
     nis_in_t,  nis_in_v  = [], []
     nis_out_t, nis_out_v = [], []
+    last_meas_idx = [-1]
+    pulse_timer   = [0]
+
+    # Camera orbit — slow parallax rotation for depth perception
+    elev_base = 22.0
+    azim_base = -55.0
+    azim_span = 45.0
 
     def init3():
-        for ln in [gt, ct, gh, ch, los_line]:
-            ln.set_data([], [])
-        for sc in [dt, dh]:
-            sc.set_offsets(np.empty((0, 2)))
+        for ln in (glow_t, line_t, glow_h, line_h, los_line, pulse):
+            ln.set_data([], []); ln.set_3d_properties([])
+        for sc in (dot_t, dot_h):
+            sc._offsets3d = ([], [], [])
         e_vline.set_xdata([d["t"][0]])
         n_vline.set_xdata([d["t"][0]])
+        e_line.set_data([], [])
         e_dot.set_data([], [])
         nis_dots_in.set_data([], [])
         nis_dots_out.set_data([], [])
-        meas_txt.set_text("")
-        return gt, ct, gh, ch, los_line, dt, dh, e_vline, n_vline, e_dot, nis_dots_in, nis_dots_out
+        return (glow_t, line_t, glow_h, line_h, los_line, pulse,
+                dot_t, dot_h, e_vline, n_vline, e_line, e_dot,
+                nis_dots_in, nis_dots_out)
 
     def update3(frame):
         i  = min(frame * speed, N - 1)
         i0 = max(0, i - TRAIL)
         t_n = float(d["t"][i])
 
-        # True trajectory trail
-        xs_t = d["X_true"][i0:i+1, 0];  ys_t = d["X_true"][i0:i+1, 1]
-        gt.set_data(xs_t, ys_t);  ct.set_data(xs_t, ys_t)
-        dt.set_offsets([[d["X_true"][i, 0], d["X_true"][i, 1]]])
+        # Trails
+        xs_t = d["X_true"][i0:i+1, 0]; ys_t = d["X_true"][i0:i+1, 1]; zs_t = d["X_true"][i0:i+1, 2]
+        glow_t.set_data(xs_t, ys_t);  glow_t.set_3d_properties(zs_t)
+        line_t.set_data(xs_t, ys_t);  line_t.set_3d_properties(zs_t)
 
-        # EKF estimate trail
-        xs_h = d["X_hat"][i0:i+1, 0];  ys_h = d["X_hat"][i0:i+1, 1]
-        gh.set_data(xs_h, ys_h);  ch.set_data(xs_h, ys_h)
-        dh.set_offsets([[d["X_hat"][i, 0], d["X_hat"][i, 1]]])
+        xs_h = d["X_hat"][i0:i+1, 0];  ys_h = d["X_hat"][i0:i+1, 1];  zs_h = d["X_hat"][i0:i+1, 2]
+        glow_h.set_data(xs_h, ys_h);  glow_h.set_3d_properties(zs_h)
+        line_h.set_data(xs_h, ys_h);  line_h.set_3d_properties(zs_h)
 
-        # LOS ray (true position → Moon, converted to km)
-        rx, ry = d["X_true"][i, 0], d["X_true"][i, 1]
-        mx, my = float(d["p2"][0]), float(d["p2"][1])
-        los_line.set_data([rx, mx], [ry, my])
+        # Markers
+        dot_t._offsets3d = ([d["X_true"][i, 0]], [d["X_true"][i, 1]], [d["X_true"][i, 2]])
+        dot_h._offsets3d = ([d["X_hat"][i, 0]],  [d["X_hat"][i, 1]],  [d["X_hat"][i, 2]])
 
-        # Follow spacecraft (zoom pan)
-        ax_orb.set_xlim(rx - ZOOM_KM, rx + ZOOM_KM)
-        ax_orb.set_ylim(ry - ZOOM_KM, ry + ZOOM_KM)
+        # LOS ray (truth → Moon)
+        rx, ry, rz = d["X_true"][i]
+        mx, my, mz = d["p2"]
+        los_line.set_data([rx, mx], [ry, my]); los_line.set_3d_properties([rz, mz])
 
-        # Measurement flash indicator
-        if np.isfinite(d["nis"][i]):
-            meas_txt.set_text("● MEAS")
+        # Measurement pulse: fade-in for ~4 frames each time meas idx advances
+        meas_idx = int(d["meas_idx_per_dense"][i])
+        if meas_idx > last_meas_idx[0] and np.isfinite(d["nis"][meas_idx]):
+            last_meas_idx[0] = meas_idx
+            pulse_timer[0] = 6
+            # accumulate NIS scatter
+            tk = float(d["t_meas"][meas_idx])
+            nv = float(d["nis"][meas_idx])
+            if NIS_LO <= nv <= NIS_HI:
+                nis_in_t.append(tk);  nis_in_v.append(nv)
+            else:
+                nis_out_t.append(tk); nis_out_v.append(nv)
+
+        if pulse_timer[0] > 0:
+            pulse.set_data([rx, mx], [ry, my]); pulse.set_3d_properties([rz, mz])
+            pulse.set_alpha(0.05 + 0.06 * pulse_timer[0])
+            pulse_timer[0] -= 1
         else:
-            meas_txt.set_text("")
+            pulse.set_alpha(0.0)
+
+        # Slow camera rotation (smooth sinusoid)
+        tau = t_n / d["t"][-1]
+        ax_orb.view_init(
+            elev=elev_base + 3.0 * np.sin(2 * np.pi * tau),
+            azim=azim_base + azim_span * tau,
+        )
 
         # Right panels
-        e_vline.set_xdata([t_n])
-        n_vline.set_xdata([t_n])
+        e_vline.set_xdata([t_n]); n_vline.set_xdata([t_n])
+        e_line.set_data(d["t"][:i+1], d["pos_err"][:i+1])
         e_dot.set_data([t_n], [d["pos_err"][i]])
-
-        # Accumulate NIS scatter
-        if np.isfinite(d["nis"][i]):
-            if NIS_LO <= d["nis"][i] <= NIS_HI:
-                nis_in_t.append(t_n);  nis_in_v.append(d["nis"][i])
-            else:
-                nis_out_t.append(t_n); nis_out_v.append(d["nis"][i])
-
         nis_dots_in.set_data(nis_in_t, nis_in_v)
         nis_dots_out.set_data(nis_out_t, nis_out_v)
 
         fig.suptitle(
-            f"Bearing-Only EKF Navigation  ·  t = {t_n:.2f} days"
-            f"    pos error = {d['pos_err'][i]:,.0f} km",
-            color=_TEXT, fontsize=12.5, y=0.97, fontweight="bold",
+            f"Bearing-Only IEKF Navigation  ·  3D Cislunar Arc  ·  "
+            f"t = {t_n:5.2f} days   pos error = {d['pos_err'][i]:,.0f} km",
+            color=_TEXT, fontsize=13, y=0.965, fontweight="bold",
         )
-        return gt, ct, gh, ch, los_line, dt, dh, e_vline, n_vline, e_dot, nis_dots_in, nis_dots_out, meas_txt
+        return (glow_t, line_t, glow_h, line_h, los_line, pulse,
+                dot_t, dot_h, e_vline, n_vline, e_line, e_dot,
+                nis_dots_in, nis_dots_out)
 
     n_frames = int(np.ceil(N / speed)) + 40
     ani = FuncAnimation(fig, update3, frames=n_frames, init_func=init3,

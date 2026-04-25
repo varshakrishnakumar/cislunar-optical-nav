@@ -645,7 +645,7 @@ def run_case_spice(
 
 def main() -> None:
     _apply_dark_theme()
-    plots_dir = Path("results/plots")
+    plots_dir = Path("results/mc/single_trial")
     _ensure_dir(plots_dir)
 
     mu, t0, tf, tc = 0.0121505856, 0.0, 6.0, 2.0
@@ -655,7 +655,7 @@ def main() -> None:
 
     print("Running 06 midcourse EKF correction ...")
     out = run_case(mu, t0, tf, tc, dt_meas, sigma_px, dropout_prob, seed,
-                   dx0, est_err, camera_mode="estimate_tracking")
+                   dx0, est_err, camera_mode="estimate_tracking", q_acc=1e-9)
     dbg = out["debug"]
 
     t_meas  = dbg["t_meas"]

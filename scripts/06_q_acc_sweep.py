@@ -1,8 +1,9 @@
 """Sweep the EKF process-noise density q_acc and measure filter consistency.
 
-Motivation: the baseline q_acc=1e-14 produces mean NEES ≈ 21 vs the χ²(6) 95%
-band of [1.2, 14.4] — the filter is overconfident. This script runs run_case at
-multiple q_acc values, records mean NIS/NEES plus terminal miss and ΔV bias,
+Motivation: at q_acc=1e-14 the filter is strongly overconfident — median NEES
+runs in the thousands vs the χ²(6) 95% band of [1.2, 14.4]. Raising q_acc to
+~1e-6 restores χ² consistency (median NEES ≈ 15). This script runs run_case at
+multiple q_acc values, records median NIS/NEES plus terminal miss and ΔV bias,
 and plots the trends so we can pick a better baseline.
 """
 from __future__ import annotations
@@ -30,7 +31,7 @@ def parse_args() -> argparse.Namespace:
         description="Sweep q_acc and record filter-consistency metrics.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--plots-dir", default="results/plots")
+    parser.add_argument("--plots-dir", default="results/mc/q_acc_sweep")
     parser.add_argument("--n-seeds",   type=int, default=8,
                         help="Monte-Carlo seeds per q_acc point.")
     return parser.parse_args()

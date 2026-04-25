@@ -32,7 +32,7 @@ Array = np.ndarray
 
 _X0_NOM = np.array([0.8359, 0.0, 0.0, 0.0, 0.05, 0.0], dtype=float)
 
-_Q_ACC_FLOOR = 1e-14
+_Q_ACC_FLOOR = 1e-9
 
 
 

@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--trajectory-csv",
         type=Path,
-        default=Path("results/spice_nrho_seed.csv"),
+        default=Path("results/seeds/spice_nrho_seed.csv"),
         help="Inertial J2000 barycentric truth trajectory from script 01.",
     )
     parser.add_argument("--label", default="L2 S halo truth arc")

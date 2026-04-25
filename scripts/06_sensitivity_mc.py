@@ -87,7 +87,7 @@ def main() -> None:
     _apply_dark_theme()
 
     p = argparse.ArgumentParser()
-    p.add_argument("--plots-dir",    type=str,   default="results/plots")
+    p.add_argument("--plots-dir",    type=str,   default="results/mc/sensitivity_live")
     p.add_argument("--n-mc",         type=int,   default=10)
     p.add_argument("--base-seed",    type=int,   default=7)
     p.add_argument("--mu",           type=float, default=0.0121505856)

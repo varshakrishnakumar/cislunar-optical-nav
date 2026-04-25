@@ -85,6 +85,7 @@ class TrialResult:
     pos_err_tc: float
     tracePpos_tc: float
     nis_mean: float
+    nees_mean: float
     valid_rate: float
 
     dx0_norm_r: float

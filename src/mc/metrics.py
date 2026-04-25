@@ -43,6 +43,7 @@ def trial_result_from_run_case(
     pos_err_tc   = float(out["pos_err_tc"])
     tracePpos_tc = float(out["tracePpos_tc"])
     nis_mean     = float(out["nis_mean"])
+    nees_mean    = float(out.get("nees_mean", float("nan")))
     valid_rate   = float(out["valid_rate"])
 
     dx0 = np.asarray(dx0, dtype=float).reshape(6)
@@ -70,6 +71,7 @@ def trial_result_from_run_case(
         pos_err_tc=pos_err_tc,
         tracePpos_tc=tracePpos_tc,
         nis_mean=nis_mean,
+        nees_mean=nees_mean,
         valid_rate=valid_rate,
         dx0_norm_r=dx0_norm_r,
         dx0_norm_v=dx0_norm_v,

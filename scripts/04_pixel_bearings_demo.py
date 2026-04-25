@@ -39,6 +39,65 @@ _MOON_C = "#C8CDD8"
 _EARTH_C= "#3B82F6"
 
 
+def _draw_sphere(ax, center, radius, color, *, alpha=0.9, n=24, zorder=5) -> None:
+    u = np.linspace(0.0, 2.0 * np.pi, n)
+    v = np.linspace(0.0, np.pi, n)
+    cu, su = np.cos(u), np.sin(u)
+    cv, sv = np.cos(v), np.sin(v)
+    xs = center[0] + radius * np.outer(cu, sv)
+    ys = center[1] + radius * np.outer(su, sv)
+    zs = center[2] + radius * np.outer(np.ones_like(u), cv)
+    ax.plot_surface(xs, ys, zs, color=color, alpha=alpha,
+                    linewidth=0, antialiased=True, shade=True, zorder=zorder)
+
+
+_MOON_TEX_CACHE = {"img": None}
+
+def _draw_textured_sphere(ax, center, radius, texture_path, *,
+                          n=56, alpha=1.0, zorder=5, rotate_lon_deg=180.0):
+    """Equirectangular-texture sphere; uses a cached RGB image so
+    per-frame calls don't re-read the JPEG from disk."""
+    import matplotlib.image as mpimg
+
+    img = _MOON_TEX_CACHE["img"]
+    if img is None:
+        try:
+            img = mpimg.imread(str(texture_path))
+        except Exception:
+            _draw_sphere(ax, center, radius, _MOON_C, alpha=alpha, zorder=zorder)
+            return
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=-1)
+        if img.dtype.kind in ("u", "i"):
+            img = img.astype(np.float32) / 255.0
+        _MOON_TEX_CACHE["img"] = img
+
+    H, W = img.shape[:2]
+    u = np.linspace(0.0, 2.0 * np.pi, n)
+    v = np.linspace(0.0, np.pi, n)
+    cu, su = np.cos(u), np.sin(u)
+    cv, sv = np.cos(v), np.sin(v)
+    xs = center[0] + radius * np.outer(cu, sv)
+    ys = center[1] + radius * np.outer(su, sv)
+    zs = center[2] + radius * np.outer(np.ones_like(u), cv)
+
+    uu_f = 0.5 * (u[:-1] + u[1:])
+    vv_f = 0.5 * (v[:-1] + v[1:])
+    U, V = np.meshgrid(uu_f, vv_f, indexing="ij")
+    lon = (U + np.radians(rotate_lon_deg)) % (2.0 * np.pi)
+    px = np.clip((lon / (2.0 * np.pi) * W).astype(int), 0, W - 1)
+    py = np.clip((V   /         np.pi * H).astype(int), 0, H - 1)
+
+    face_rgb  = img[py, px, :3]
+    face_rgba = np.empty(face_rgb.shape[:2] + (4,), dtype=float)
+    face_rgba[..., :3] = face_rgb
+    face_rgba[..., 3]  = float(alpha)
+
+    ax.plot_surface(xs, ys, zs, facecolors=face_rgba,
+                    linewidth=0, antialiased=False, shade=False,
+                    rstride=1, cstride=1, zorder=zorder)
+
+
 def _apply_dark_theme() -> None:
     plt.rcParams.update({
         "figure.facecolor":  _BG,
@@ -79,22 +138,32 @@ def _run_ffmpeg(frames_dir: Path, out_mp4: Path, fps: int) -> None:
 def _render_split_frame(
     *,
     out_path: Path,
-    t: float,
-    r_true_xy: np.ndarray,
-    r_est_xy: np.ndarray,
+    k: int,
+    N_total: int,
+    t_meas: np.ndarray,
+    X_true: np.ndarray,
+    X_hat: np.ndarray,
     r_moon: np.ndarray,
     r_earth: np.ndarray,
-    u_px_now: float,
-    v_px_now: float,
-    valid_now: bool,
-    pos_err_hist: np.ndarray,
-    nis_hist: np.ndarray,
-    t_hist: np.ndarray,
+    u_px_arr: np.ndarray,
+    v_px_arr: np.ndarray,
+    valid_arr: np.ndarray,
+    upd_used_arr: np.ndarray,
+    pos_err_arr: np.ndarray,
+    nis_arr: np.ndarray,
     cam_width: int,
     cam_height: int,
     intr: Intrinsics,
-    update_used: bool,
+    view_box: dict,
 ) -> None:
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401  (registers 3D proj)
+
+    t = float(t_meas[k])
+    valid_now   = bool(valid_arr[k])
+    update_used = bool(upd_used_arr[k])
+    u_px_now    = float(u_px_arr[k])
+    v_px_now    = float(v_px_arr[k])
+
     dpi = 100
     fig_w, fig_h = 1600 / dpi, 720 / dpi
     fig = plt.figure(figsize=(fig_w, fig_h), dpi=dpi, facecolor=_BG)
@@ -102,10 +171,11 @@ def _render_split_frame(
     gs = gridspec.GridSpec(
         2, 2,
         figure=fig,
-        left=0.05, right=0.97, top=0.94, bottom=0.09,
-        wspace=0.30, hspace=0.35,
+        left=0.04, right=0.97, top=0.93, bottom=0.09,
+        wspace=0.24, hspace=0.42,
     )
 
+    # ── Camera image plane ───────────────────────────────────────────────────
     ax_cam = fig.add_subplot(gs[:, 0])
     ax_cam.set_facecolor("#050709")
     ax_cam.set_xlim(0, cam_width)
@@ -114,22 +184,40 @@ def _render_split_frame(
     ax_cam.plot([0, cam_width, cam_width, 0, 0],
                 [0, 0, cam_height, cam_height, 0],
                 color=_BORDER, lw=1.0)
-    cx, cy = float(intr.cx), float(intr.cy)
-    ax_cam.plot([cx - 14, cx + 14], [cy, cy], color=_DIM, lw=0.8)
-    ax_cam.plot([cx, cx], [cy - 14, cy + 14], color=_DIM, lw=0.8)
+    cx_i, cy_i = float(intr.cx), float(intr.cy)
+    ax_cam.plot([cx_i - 14, cx_i + 14], [cy_i, cy_i], color=_DIM, lw=0.8)
+    ax_cam.plot([cx_i, cx_i], [cy_i - 14, cy_i + 14], color=_DIM, lw=0.8)
+
+    # Fading trail of recent detections
+    TRAIL_CAM = 30
+    i_lo = max(0, k - TRAIL_CAM + 1)
+    idx_win = np.arange(i_lo, k)
+    if idx_win.size:
+        u_win = u_px_arr[idx_win]
+        v_win = v_px_arr[idx_win]
+        ok = valid_arr[idx_win] & np.isfinite(u_win) & np.isfinite(v_win)
+        if ok.any():
+            ages   = (k - idx_win[ok]).astype(float) / float(TRAIL_CAM)
+            alphas = np.clip((1.0 - ages) ** 2, 0.0, 0.55)
+            base   = np.array([0.133, 0.827, 0.933, 1.0])   # _CYAN
+            cols   = np.tile(base, (len(alphas), 1))
+            cols[:, 3] = alphas
+            ax_cam.scatter(u_win[ok], v_win[ok],
+                           s=14, c=cols, zorder=3, edgecolors="none")
 
     if valid_now and np.isfinite(u_px_now) and np.isfinite(v_px_now):
         dot_color = _GREEN if update_used else _AMBER
-        ax_cam.scatter([u_px_now], [v_px_now], s=60, color=dot_color,
-                       zorder=5, marker="o")
-        ax_cam.plot([u_px_now - 7, u_px_now + 7], [v_px_now, v_px_now],
-                    color=dot_color, lw=1.2, zorder=4)
-        ax_cam.plot([u_px_now, u_px_now], [v_px_now - 7, v_px_now + 7],
-                    color=dot_color, lw=1.2, zorder=4)
+        ax_cam.scatter([u_px_now], [v_px_now], s=72, color=dot_color,
+                       zorder=5, marker="o",
+                       edgecolors="white", linewidths=0.5)
+        ax_cam.plot([u_px_now - 9, u_px_now + 9], [v_px_now, v_px_now],
+                    color=dot_color, lw=1.3, zorder=4)
+        ax_cam.plot([u_px_now, u_px_now], [v_px_now - 9, v_px_now + 9],
+                    color=dot_color, lw=1.3, zorder=4)
 
     status = "ACCEPTED" if update_used else ("DETECTED" if valid_now else "NO DETECT")
     status_color = _GREEN if update_used else (_AMBER if valid_now else _RED)
-    ax_cam.text(12, 18, f"t = {t:.3f} dimensionless\n{status}",
+    ax_cam.text(12, 18, f"t = {t:.3f} TU\n{status}",
                 color=status_color, fontsize=10, family="monospace",
                 va="top", ha="left",
                 bbox=dict(facecolor="#050709", edgecolor=_BORDER, pad=5, alpha=0.85))
@@ -138,61 +226,108 @@ def _render_split_frame(
     ax_cam.set_xlabel("u [px]", color=_TEXT)
     ax_cam.set_ylabel("v [px]", color=_TEXT)
 
-    ax_traj = fig.add_subplot(gs[0, 1])
-    ax_traj.set_facecolor(_PANEL)
-    ax_traj.scatter([r_earth[0]], [r_earth[1]], s=80, c=_EARTH_C, zorder=5, label="Earth")
-    ax_traj.scatter([r_moon[0]],  [r_moon[1]],  s=55, c=_MOON_C,  zorder=5, label="Moon")
+    # ── 3D CR3BP orbit (fixed follow-box, slow azimuth sweep) ────────────────
+    ax_traj = fig.add_subplot(gs[0, 1], projection="3d")
+    ax_traj.set_facecolor(_BG)
+    pane_rgba = (0.030, 0.043, 0.078, 1.0)
+    grid_rgba = (0.11, 0.14, 0.25, 0.22)
+    for axis in (ax_traj.xaxis, ax_traj.yaxis, ax_traj.zaxis):
+        axis.set_pane_color(pane_rgba)
+        axis.label.set_color(_TEXT)
+        axis._axinfo["grid"]["color"]     = grid_rgba
+        axis._axinfo["grid"]["linewidth"] = 0.35
+    ax_traj.tick_params(colors=_DIM, labelsize=7)
 
+    cx, cy, cz = view_box["center"]
+    hx, hy, hz = view_box["half"]
+    ax_traj.set_xlim(cx - hx, cx + hx)
+    ax_traj.set_ylim(cy - hy, cy + hy)
+    ax_traj.set_zlim(cz - hz, cz + hz)
+    ax_traj.set_box_aspect((hx, hy, hz))
 
-    ax_traj.plot(r_true_xy[:, 0], r_true_xy[:, 1],
-                 color=_CYAN, lw=1.6, alpha=0.9, label="truth")
-    ax_traj.scatter([r_true_xy[-1, 0]], [r_true_xy[-1, 1]],
-                    s=30, c=_CYAN, zorder=6)
+    prog = k / max(1, N_total - 1)
+    azim = -65.0 + 35.0 * prog
+    ax_traj.view_init(elev=22.0, azim=azim)
 
-    if np.all(np.isfinite(r_est_xy[-1])):
-        ax_traj.plot(r_est_xy[:, 0], r_est_xy[:, 1],
-                     color=_AMBER, lw=1.6, ls=(0, (5, 3)), alpha=0.9, label="EKF est")
-        ax_traj.scatter([r_est_xy[-1, 0]], [r_est_xy[-1, 1]],
-                        s=30, c=_AMBER, marker="D", zorder=6)
+    _moon_tex = Path("results/seeds/moon_texture.jpg")
+    if _moon_tex.exists():
+        _draw_textured_sphere(ax_traj, r_moon, 0.010, _moon_tex,
+                              n=56, alpha=1.0, rotate_lon_deg=180.0)
+    else:
+        _draw_sphere(ax_traj, r_moon, 0.010, _MOON_C, alpha=0.9, zorder=3)
 
-    ax_traj.set_title("CR3BP XY Orbit (near L1)", color=_TEXT, fontsize=10)
-    ax_traj.set_xlabel("x [dimensionless CR3BP length]", color=_TEXT, fontsize=9)
-    ax_traj.set_ylabel("y [dimensionless CR3BP length]", color=_TEXT, fontsize=9)
-    ax_traj.legend(loc="lower left", fontsize=8)
-    ax_traj.grid(True)
+    ax_traj.plot(X_true[:, 0], X_true[:, 1], X_true[:, 2],
+                 color=_CYAN, lw=0.6, alpha=0.20, zorder=2)
 
-    cx_r = float(r_true_xy[-1, 0])
-    cy_r = float(r_true_xy[-1, 1])
-    half = 0.04
-    ax_traj.set_xlim(cx_r - half * 2.5, cx_r + half * 2.5)
-    ax_traj.set_ylim(cy_r - half, cy_r + half)
+    TRAIL = 120
+    k0 = max(0, k - TRAIL)
+    seg_t = X_true[k0:k + 1]
+    ax_traj.plot(seg_t[:, 0], seg_t[:, 1], seg_t[:, 2],
+                 color=_CYAN, lw=5, alpha=0.12, zorder=3)
+    ax_traj.plot(seg_t[:, 0], seg_t[:, 1], seg_t[:, 2],
+                 color=_CYAN, lw=1.8, alpha=0.95, zorder=4)
 
-    for sp in ax_traj.spines.values():
-        sp.set_edgecolor(_BORDER)
+    seg_h = X_hat[k0:k + 1]
+    if np.all(np.isfinite(seg_h[:, :3])):
+        ax_traj.plot(seg_h[:, 0], seg_h[:, 1], seg_h[:, 2],
+                     color=_AMBER, lw=1.5, alpha=0.9,
+                     ls=(0, (5, 3)), zorder=4)
 
+    ax_traj.scatter([X_true[k, 0]], [X_true[k, 1]], [X_true[k, 2]],
+                    s=55, c=_CYAN, edgecolors="white", linewidths=0.6,
+                    zorder=6, depthshade=False)
+    if np.all(np.isfinite(X_hat[k, :3])):
+        ax_traj.scatter([X_hat[k, 0]], [X_hat[k, 1]], [X_hat[k, 2]],
+                        s=45, c=_AMBER, edgecolors="white", linewidths=0.5,
+                        marker="D", zorder=6, depthshade=False)
+
+    ax_traj.text2D(0.02, 0.04, f"← Earth  (x ≈ {float(r_earth[0]):+.3f})",
+                   transform=ax_traj.transAxes,
+                   color=_EARTH_C, fontsize=7.5, family="monospace")
+
+    legend_handles = [
+        Line2D([0], [0], color=_CYAN,  lw=2, label="truth"),
+        Line2D([0], [0], color=_AMBER, lw=2, ls=(0, (5, 3)), label="EKF est"),
+        Line2D([0], [0], color=_MOON_C, marker="o", linestyle="",
+               markersize=8, label="Moon"),
+    ]
+    ax_traj.legend(handles=legend_handles, loc="upper left", fontsize=7.5,
+                   facecolor=_PANEL, edgecolor=_BORDER, labelcolor=_TEXT)
+    ax_traj.set_title("CR3BP Orbit (near L1, 3D)", color=_TEXT,
+                      fontsize=10, pad=4)
+    ax_traj.set_xlabel("x [DU]", color=_TEXT, fontsize=8, labelpad=4)
+    ax_traj.set_ylabel("y [DU]", color=_TEXT, fontsize=8, labelpad=4)
+    ax_traj.set_zlabel("z [DU]", color=_TEXT, fontsize=8, labelpad=2)
+
+    # ── Position error & NIS ─────────────────────────────────────────────────
     ax_err = fig.add_subplot(gs[1, 1])
     ax_err.set_facecolor(_PANEL)
 
-    ax_err.semilogy(t_hist, pos_err_hist + 1e-12, color=_CYAN, lw=1.5,
+    t_hist       = t_meas[: k + 1]
+    pos_err_hist = pos_err_arr[: k + 1]
+    nis_hist     = nis_arr[: k + 1]
+
+    ax_err.semilogy(t_hist, pos_err_hist + 1e-12, color=_CYAN, lw=1.6,
                     label="‖pos err‖")
 
     ax_nis = ax_err.twinx()
     ax_nis.set_facecolor("none")
     nis_valid = np.isfinite(nis_hist)
     if nis_valid.any():
-        ax_nis.fill_between(t_hist,
+        ax_nis.fill_between(t_meas,
                             chi2.ppf(0.025, df=2), chi2.ppf(0.975, df=2),
                             color=_GREEN, alpha=0.10)
         ax_nis.scatter(t_hist[nis_valid], nis_hist[nis_valid], s=5,
-                       color=_GREEN, alpha=0.7, zorder=3)
+                       color=_GREEN, alpha=0.75, zorder=3)
     ax_nis.set_ylabel("NIS", color=_GREEN, fontsize=9)
     ax_nis.tick_params(axis="y", colors=_GREEN)
     ax_nis.set_ylim(0, 20)
 
     ax_err.set_title("Position Error & NIS", color=_TEXT, fontsize=10)
-    ax_err.set_xlabel("t [dimensionless CR3BP time]", color=_TEXT, fontsize=9)
-    ax_err.set_ylabel("‖r̂ − r‖  [dimensionless CR3BP length]", color=_CYAN, fontsize=9)
+    ax_err.set_xlabel("t [TU]", color=_TEXT, fontsize=9)
+    ax_err.set_ylabel("‖r̂ − r‖  [DU]", color=_CYAN, fontsize=9)
     ax_err.tick_params(axis="y", colors=_CYAN)
+    ax_err.set_xlim(float(t_meas[0]), float(t_meas[-1]))
     ax_err.grid(True)
     for sp in ax_err.spines.values():
         sp.set_edgecolor(_BORDER)
@@ -208,7 +343,7 @@ def _render_split_frame(
 def main() -> None:
     _apply_dark_theme()
 
-    plots_dir  = Path("results/plots");  plots_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir  = Path("results/demos");  plots_dir.mkdir(parents=True, exist_ok=True)
     videos_dir = Path("results/videos"); videos_dir.mkdir(parents=True, exist_ok=True)
     frames_dir = videos_dir / "04_frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -399,32 +534,48 @@ def main() -> None:
         print("ffmpeg not found — skipping video generation.")
         return
 
+    # Fixed view box around the trajectory + Moon: no camera shake per frame.
+    all_x = np.concatenate([X_true[:, 0], [r_body[0]]])
+    all_y = np.concatenate([X_true[:, 1], [r_body[1]]])
+    x_lo, x_hi = float(all_x.min()), float(all_x.max())
+    y_lo, y_hi = float(all_y.min()), float(all_y.max())
+    span = max(x_hi - x_lo, y_hi - y_lo) + 0.04
+    view_box = {
+        "center": np.array([0.5 * (x_lo + x_hi), 0.5 * (y_lo + y_hi), 0.0]),
+        "half":   np.array([span * 0.55, span * 0.55, span * 0.22]),
+    }
+
+    for f in frames_dir.glob("frame_*.png"):
+        f.unlink()
+
     print(f"Rendering {N} video frames ...")
-    stride = 2
+    stride = 1
     frame_id = 0
     for k in range(0, N, stride):
         _render_split_frame(
             out_path    = frames_dir / f"frame_{frame_id:05d}.png",
-            t           = float(t_meas[k]),
-            r_true_xy   = X_true[: k + 1, :2],
-            r_est_xy    = X_hat[: k + 1, :2],
-            r_moon      = r_body[:2],
-            r_earth     = r_earth[:2],
-            u_px_now    = float(u_px_arr[k]),
-            v_px_now    = float(v_px_arr[k]),
-            valid_now   = bool(valid_arr[k]),
-            pos_err_hist= pos_err_arr[: k + 1],
-            nis_hist    = nis_arr[: k + 1],
-            t_hist      = t_meas[: k + 1],
+            k           = k,
+            N_total     = N,
+            t_meas      = t_meas,
+            X_true      = X_true,
+            X_hat       = X_hat,
+            r_moon      = r_body,
+            r_earth     = r_earth,
+            u_px_arr    = u_px_arr,
+            v_px_arr    = v_px_arr,
+            valid_arr   = valid_arr,
+            upd_used_arr= upd_used_arr,
+            pos_err_arr = pos_err_arr,
+            nis_arr     = nis_arr,
             cam_width   = intr.width,
             cam_height  = intr.height,
             intr        = intr,
-            update_used = bool(upd_used_arr[k]),
+            view_box    = view_box,
         )
         frame_id += 1
 
     out_mp4 = videos_dir / "04_pixel_bearings.mp4"
-    video_fps = max(1, int(round((1.0 / (dt_meas * stride)) * 0.5)))
+    video_fps = 30
     _run_ffmpeg(frames_dir, out_mp4, fps=video_fps)
     print(f"Wrote: {out_mp4}")
 

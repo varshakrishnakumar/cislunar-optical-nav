@@ -33,7 +33,7 @@ def create_and_save_plot(X: np.ndarray, model: CR3BP, L: dict, option: str) -> N
 
     plt.tight_layout()
 
-    plots_dir = repo_path("results/plots")
+    plots_dir = repo_path("results/demos")
     plots_dir.mkdir(parents=True, exist_ok=True)
     plt.savefig(plots_dir / f"{option}_trajectory.png", dpi=300)
     plt.close()

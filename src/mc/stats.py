@@ -80,6 +80,7 @@ def summarize_results(
         "pos_err_tc",
         "tracePpos_tc",
         "nis_mean",
+        "nees_mean",
         "valid_rate",
         "dx0_norm_r",
         "dx0_norm_v",

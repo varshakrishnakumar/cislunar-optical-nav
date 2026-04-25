@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--trajectory-csv",
         type=Path,
-        default=Path("results/spice_nrho_seed.csv"),
+        default=Path("results/seeds/spice_nrho_seed.csv"),
         help="Inertial J2000 barycentric truth trajectory (columns: t_s,x_km,y_km,z_km,vx_km_s,vy_km_s,vz_km_s).",
     )
     parser.add_argument(
@@ -65,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--moon-display-scale", type=float, default=4.0, help="Artistic Moon display radius multiplier.")
     parser.add_argument("--los-len-km", type=float, default=7000.0, help="Display length for the Moon LOS arrow.")
-    parser.add_argument("--moon-texture", type=Path, default=Path("results/moon_texture.jpg"))
+    parser.add_argument("--moon-texture", type=Path, default=Path("results/seeds/moon_texture.jpg"))
     parser.add_argument("--out-plot", type=Path, default=Path("reports/hero_visual.png"))
     parser.add_argument("--elev", type=float, default=24.0)
     parser.add_argument("--azim", type=float, default=-62.0)

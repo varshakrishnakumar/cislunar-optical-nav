@@ -178,7 +178,8 @@ def main() -> None:
     ax.legend(loc="best", fontsize=9)
     plt.tight_layout()
 
-    plt.savefig('results/plots/02_targeting_demo_plot.png', dpi=300)
+    Path('results/demos').mkdir(parents=True, exist_ok=True)
+    plt.savefig('results/demos/02_targeting_demo_plot.png', dpi=300)
     plt.close(fig)
 
 

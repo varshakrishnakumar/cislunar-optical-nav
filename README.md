@@ -28,9 +28,9 @@ python3 scripts/01_propagate_jpl_seed_spice.py \
   --kernel data/kernels/de442s.bsp \
   --epoch "2026 APR 10 00:00:00 TDB" \
   --libr 2 --branch S \
-  --out-csv results/spice_nrho_seed.csv \
-  --out-relative-csv results/spice_nrho_seed_relative.csv \
-  --out-plot results/plots/spice_nrho_seed.png
+  --out-csv results/seeds/spice_nrho_seed.csv \
+  --out-relative-csv results/seeds/spice_nrho_seed_relative.csv \
+  --out-plot results/seeds/spice_nrho_seed.png
 ```
 
 The relative CSV and plot report include Earth-relative, Moon-relative, and Earth-Moon synodic diagnostics, which are more useful for cislunar navigation than raw Solar System barycentric J2000 coordinates alone.
@@ -47,7 +47,7 @@ Run the IEKF/midcourse Monte Carlo with plots that explain both navigation perfo
 python3 scripts/06_monte_carlo.py \
   --study baseline \
   --n-trials 50 \
-  --plots-dir results/plots/06_baseline
+  --plots-dir results/mc/baseline_live
 ```
 
 The relative Delta-V inflation plot uses `(|Delta-V_EKF| / |Delta-V_perfect| - 1) * 100`. For example, `+5.6%` means the IEKF-based burn magnitude was 5.6% larger than the perfect-information single-impulse burn for the same targeting problem, not that it achieved 5.6% of optimal performance.
@@ -59,7 +59,7 @@ Run the synthetic vision measurement demo with quantitative outputs:
 ```bash
 python3 scripts/08_feature_tracking_demo.py \
   --skip-video \
-  --plots-dir results/plots \
+  --plots-dir results/demos \
   --metrics-csv results/vision/08_feature_metrics.csv
 ```
 

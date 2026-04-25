@@ -112,8 +112,8 @@ SANITY = dict(
 )
 
 OUTPUT = dict(
-    results_dir=Path("results"),
-    plots_dir=Path("results/plots"),
+    results_dir=Path("results/active_tracking"),
+    plots_dir=Path("results/active_tracking"),
     videos_dir=Path("results/videos"),
     stem_base="07_active_tracking",
 )

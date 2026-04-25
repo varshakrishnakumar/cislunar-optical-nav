@@ -25,6 +25,7 @@ from visualization.style import (
     BG as _BG,
     BORDER as _BORDER,
     CYAN as _CYAN,
+    DIM as _DIM,
     GREEN as _GREEN,
     ORANGE as _ORANGE,
     PANEL as _PANEL,
@@ -57,13 +58,19 @@ def parse_args() -> argparse.Namespace:
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--plots-dir", type=Path, default=Path("results/plots"))
+    parser.add_argument("--plots-dir", type=Path, default=Path("results/demos"))
     parser.add_argument("--videos-dir", type=Path, default=Path("results/videos"))
     parser.add_argument("--metrics-csv", type=Path, default=Path("results/vision/08_feature_metrics.csv"))
-    parser.add_argument("--texture-path", type=Path, default=Path("results/moon_texture.jpg"))
+    parser.add_argument("--texture-path", type=Path, default=Path("results/seeds/moon_texture.jpg"))
     parser.add_argument("--download-texture", action="store_true", help="Download the optional Moon texture if missing.")
     parser.add_argument("--duration", type=float, default=14.0, help="CR3BP propagation duration in dimensionless time.")
-    parser.add_argument("--fps", type=int, default=8, help="Output video playback frame rate.")
+    parser.add_argument("--fps", type=int, default=24, help="Output video playback frame rate.")
+    parser.add_argument("--slam-panel", action="store_true", default=True,
+                        help="Render a right-side 3D SLAM-map panel beside the image plane (default on).")
+    parser.add_argument("--no-slam-panel", dest="slam_panel", action="store_false",
+                        help="Disable the right-side SLAM-map panel.")
+    parser.add_argument("--highlight", action="store_true",
+                        help="Also emit a short highlight clip (middle 40%% of the arc).")
     parser.add_argument("--slowmo", type=float, default=10.0)
     parser.add_argument("--max-frames", type=int, default=420, help="Cap rendered frames for practical runtime.")
     parser.add_argument("--strip-count", type=int, default=8)
@@ -622,6 +629,123 @@ def _plot_metrics(
     plt.close(fig)
 
 
+def _compute_reveal_frames(
+    tracker: "KLTTracker",
+    triangulation: dict[int, dict],
+    min_obs: int,
+) -> dict[int, int]:
+    """For each triangulated landmark, the frame index at which its
+    min_obs-th observation was captured. Used to "reveal" landmarks
+    during the video as KLT tracks mature."""
+    reveal: dict[int, int] = {}
+    for tid in triangulation:
+        obs = tracker.history_all.get(int(tid), [])
+        if len(obs) >= int(min_obs):
+            reveal[int(tid)] = int(obs[int(min_obs) - 1][0])
+    return reveal
+
+
+def _render_slam_panel_frame(
+    *,
+    out_path: Path,
+    width_px: int,
+    height_px: int,
+    t_k: float,
+    r_sc_k: np.ndarray,
+    r_moon: np.ndarray,
+    slam_pts_k: np.ndarray,
+    slam_rms_k: np.ndarray,
+    tex: np.ndarray,
+    n_total: int,
+    final_rms_median: float,
+) -> None:
+    """Render the SLAM-map panel for one frame. Small textured Moon at
+    origin, accumulated triangulated landmarks scattered in world frame
+    around it (coloured by reproj RMS), spacecraft position as a cyan
+    dot, axes in lunar radii."""
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
+    dpi = 100
+    fig = plt.figure(figsize=(width_px / dpi, height_px / dpi),
+                      dpi=dpi, facecolor=_BG)
+    ax = fig.add_axes([0.04, 0.07, 0.92, 0.82], projection="3d")
+    ax.set_facecolor(_PANEL)
+    pane_rgba = (0.020, 0.031, 0.063, 1.0)
+    grid_rgba = (0.10, 0.13, 0.25, 0.22)
+    for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis.set_pane_color(pane_rgba)
+        axis.label.set_color(_TEXT)
+        axis._axinfo["grid"]["color"] = grid_rgba
+        axis._axinfo["grid"]["linewidth"] = 0.35
+    ax.tick_params(colors=_DIM, labelsize=6)
+
+    # Textured Moon at origin (in lunar-radius units)
+    n_sph = 48
+    u = np.linspace(0.0, 2.0 * np.pi, n_sph)
+    v = np.linspace(0.0, np.pi, n_sph)
+    cu, su = np.cos(u), np.sin(u)
+    cv, sv = np.cos(v), np.sin(v)
+    xs = np.outer(cu, sv)
+    ys = np.outer(su, sv)
+    zs = np.outer(np.ones_like(u), cv)
+    if tex.dtype.kind in ("u", "i"):
+        tex_f = tex.astype(np.float32) / 255.0
+    else:
+        tex_f = tex
+    H, W = tex_f.shape[:2]
+    uu_f = 0.5 * (u[:-1] + u[1:])
+    vv_f = 0.5 * (v[:-1] + v[1:])
+    Uc, Vc = np.meshgrid(uu_f, vv_f, indexing="ij")
+    lon = (Uc + np.pi) % (2.0 * np.pi)
+    px_i = np.clip((lon / (2.0 * np.pi) * W).astype(int), 0, W - 1)
+    py_i = np.clip((Vc /        np.pi * H).astype(int), 0, H - 1)
+    face_rgba = np.empty((n_sph - 1, n_sph - 1, 4), dtype=float)
+    face_rgba[..., :3] = tex_f[py_i, px_i, :3]
+    face_rgba[..., 3]  = 1.0
+    ax.plot_surface(xs, ys, zs, facecolors=face_rgba,
+                    shade=False, linewidth=0, antialiased=False,
+                    rstride=1, cstride=1, zorder=3)
+
+    # Accumulated landmarks (world frame shifted so Moon = origin; in R_moon units)
+    if slam_pts_k.size > 0:
+        P = (slam_pts_k - r_moon[None, :]) / _R_MOON_ND
+        sc = ax.scatter(P[:, 0], P[:, 1], P[:, 2],
+                        c=slam_rms_k, cmap="plasma",
+                        vmin=0.0, vmax=max(2.0, float(final_rms_median) * 1.5),
+                        s=24, depthshade=False, zorder=6,
+                        edgecolor=_TEXT, linewidth=0.3)
+
+    # (Earlier versions drew the spacecraft + its LOS ray here, but the
+    # spacecraft's Moon-relative range swings well outside the ±3.5 R_moon
+    # plot box during most of the arc — producing a "ball on a string"
+    # artifact that fought the map-building story. The SLAM panel now
+    # shows only the map and the Moon.)
+
+    lim = 3.5
+    ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim); ax.set_zlim(-lim, lim)
+    try:
+        ax.set_box_aspect((1, 1, 1))
+    except Exception:
+        pass
+    ax.set_xlabel("x  [R☾]", color=_TEXT, fontsize=7, labelpad=-2)
+    ax.set_ylabel("y  [R☾]", color=_TEXT, fontsize=7, labelpad=-2)
+    ax.set_zlabel("z  [R☾]", color=_TEXT, fontsize=7, labelpad=-2)
+
+    # Slow camera rotation for depth perception
+    ax.view_init(elev=22.0, azim=-55.0 + 55.0 * min(1.0, t_k / 14.0))
+
+    n_shown = 0 if slam_pts_k.size == 0 else slam_pts_k.shape[0]
+    fig.text(0.04, 0.95,
+             f"SLAM MAP  ·  t = {t_k:5.2f}  ·  {n_shown:3d} / {n_total} landmarks",
+             color=_TEXT, fontsize=10, family="monospace", fontweight="bold")
+    fig.text(0.04, 0.92,
+             "triangulated KLT landmarks  ·  coloured by reproj RMS",
+             color=_DIM, fontsize=8, family="monospace")
+
+    fig.savefig(out_path, dpi=dpi, facecolor=_BG)
+    plt.close(fig)
+
+
 def _plot_triangulation_map(
     triangulation: dict[int, dict],
     r_moon: np.ndarray,
@@ -743,7 +867,15 @@ def _draw_combined_panel(
                 color=_RED, fontsize=8, family="monospace", va="center",
                 bbox=dict(facecolor=(0,0,0,0.65), edgecolor="none", pad=3), zorder=8)
 
-    for tk in tracks:
+    # Cap to top-N by age so the Moon stays legible during close-approach
+    # frames; sort newest-first is a noisy disco of overlapping rings.
+    MAX_TRACKS_SHOWN = 35
+    tracks_to_draw = (
+        sorted(tracks, key=lambda t: -t.age)[:MAX_TRACKS_SHOWN]
+        if len(tracks) > MAX_TRACKS_SHOWN else list(tracks)
+    )
+
+    for tk in tracks_to_draw:
         col = tk.color
         hist = list(tk.history)
         if len(hist) >= 2:
@@ -757,7 +889,7 @@ def _draw_combined_panel(
         u, v = tk.uv
         r_mark = 3.5 if tk.age < 4 else 5.0
         ax.scatter([u], [v], s=(r_mark * 4.0), facecolors="none", edgecolors=col,
-                   linewidths=1.3, zorder=7)
+                   linewidths=1.0, zorder=7)
 
         if len(hist) >= 2:
             _, up, vp = hist[-2]
@@ -836,6 +968,44 @@ def _run_ffmpeg(frames_dir: Path, out: Path, fps: int) -> None:
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "17",
         "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", str(out),
     ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _run_ffmpeg_stack(a_dir: Path, b_dir: Path, out: Path, fps: int,
+                       *, orientation: str = "vstack") -> None:
+    """Combine two frame sequences into one video. orientation='vstack'
+    stacks a on top of b; orientation='hstack' puts a left of b."""
+    if orientation not in ("vstack", "hstack"):
+        raise ValueError(f"orientation must be 'vstack' or 'hstack', got {orientation!r}")
+    subprocess.run([
+        "ffmpeg", "-y",
+        "-framerate", str(fps), "-i", str(a_dir / "frame_%05d.png"),
+        "-framerate", str(fps), "-i", str(b_dir / "frame_%05d.png"),
+        "-filter_complex",
+        "[0:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[a];"
+        "[1:v]pad=ceil(iw/2)*2:ceil(ih/2)*2[b];"
+        f"[a][b]{orientation}=inputs=2",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "17",
+        str(out),
+    ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _ffmpeg_trim(src: Path, out: Path, start_s: float, dur_s: float,
+                  *, slowmo: float = 1.0) -> None:
+    """Trim a video to [start_s, start_s+dur_s] seconds. If slowmo > 1,
+    the clip also plays back that many times slower via PTS stretch
+    (e.g. slowmo=1.5 makes a 6 s trim play as 9 s on screen).
+    Re-encodes so the trimmed clip has keyframes at its own start."""
+    # -ss and -t must be INPUT options (before -i) so ffmpeg seeks in
+    # the source and caps *input* duration. Placing -t after -i caps
+    # output duration instead, which silently truncates slow-mo clips.
+    cmd = ["ffmpeg", "-y",
+           "-ss", f"{start_s:.3f}", "-t", f"{dur_s:.3f}",
+           "-i", str(src)]
+    if float(slowmo) != 1.0:
+        cmd.extend(["-vf", f"setpts={float(slowmo):.3f}*PTS"])
+    cmd.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "17",
+                 str(out)])
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 
@@ -1024,10 +1194,94 @@ def main() -> None:
         _plot_triangulation_map(triangulation, r_moon, r_true, map_plot)
         print(f"Wrote SLAM map: {map_plot}")
 
+    # Render side-by-side SLAM-map panel (right) to pair with the existing
+    # image-plane panel (left). Landmarks accumulate over time as their
+    # min_obs-th observation is captured, so the map visibly builds up.
+    slam_frames_dir = videos_dir / "08_feature_slam_frames"
+    if (
+        bool(getattr(args, "slam_panel", True))
+        and triangulation
+        and not args.skip_video
+    ):
+        slam_frames_dir.mkdir(parents=True, exist_ok=True)
+        reveal = _compute_reveal_frames(tracker, triangulation,
+                                        min_obs=int(args.triangulate_min_obs))
+        pts_all = np.array(
+            [rec["X_world"] for rec in triangulation.values()], dtype=float,
+        )
+        rms_all = np.array(
+            [rec["rms_reproj_px"] for rec in triangulation.values()], dtype=float,
+        )
+        tids    = np.array(list(triangulation.keys()), dtype=int)
+        final_rms_median = float(np.median(rms_all)) if rms_all.size else 1.0
+
+        reveal_arr = np.array(
+            [reveal.get(int(t), N + 1) for t in tids], dtype=int,
+        )
+
+        slam_w = cam_w + 20
+        slam_h = cam_h + 72
+        print(f"Rendering {N} SLAM-map frames ...")
+        for k in range(N):
+            mask_k = reveal_arr <= k
+            _render_slam_panel_frame(
+                out_path = slam_frames_dir / f"frame_{k:05d}.png",
+                width_px  = slam_w,
+                height_px = slam_h,
+                t_k       = float(t_arr[k]),
+                r_sc_k    = r_true[k],
+                r_moon    = r_moon,
+                slam_pts_k = pts_all[mask_k] if pts_all.size else pts_all,
+                slam_rms_k = rms_all[mask_k] if rms_all.size else rms_all,
+                tex       = tex,
+                n_total   = int(len(triangulation)),
+                final_rms_median = final_rms_median,
+            )
+
     if not args.skip_video and shutil.which("ffmpeg"):
         out_mp4 = videos_dir / "08_feature_tracking.mp4"
-        _run_ffmpeg(frames_dir, out_mp4, fps=fps)
-        print(f"Wrote video: {out_mp4}  ({N} frames @ {fps} fps = {N/fps:.1f} s)")
+        if slam_frames_dir.exists() and any(slam_frames_dir.iterdir()):
+            _run_ffmpeg_stack(frames_dir, slam_frames_dir, out_mp4, fps=fps,
+                               orientation="vstack")
+            print(f"Wrote side-by-side video: {out_mp4}  "
+                  f"({N} frames @ {fps} fps = {N/fps:.1f} s)")
+        else:
+            _run_ffmpeg(frames_dir, out_mp4, fps=fps)
+            print(f"Wrote video: {out_mp4}  ({N} frames @ {fps} fps = {N/fps:.1f} s)")
+
+        if getattr(args, "highlight", False):
+            highlight_mp4 = videos_dir / "08_feature_tracking_highlight.mp4"
+            # Pick the landmark-accumulation sweet spot: frames where the
+            # cumulative revealed count sits roughly in [64%, 87%] of the
+            # final total (e.g. ~220 → ~300 for n_total = 344). That cuts
+            # the fast "approach zoom" at the start and the "fly-away" at
+            # the end, leaving the dense middle where the map is filling in.
+            n_total_lm = int(len(triangulation)) if triangulation else 0
+            if n_total_lm > 0:
+                cum = np.zeros(N + 1, dtype=int)
+                for r in reveal_arr:
+                    if 0 <= r < N:
+                        cum[r + 1:] += 1
+                lo_count = int(round(0.64 * n_total_lm))
+                hi_count = int(round(0.87 * n_total_lm))
+                k_lo = int(np.searchsorted(cum, lo_count))
+                k_hi = int(np.searchsorted(cum, hi_count))
+                k_lo = max(0, min(N - 1, k_lo))
+                k_hi = max(k_lo + 1, min(N - 1, k_hi))
+                start_s = k_lo / fps
+                dur_s   = (k_hi - k_lo) / fps
+            else:
+                total_s = N / fps
+                start_s = 0.30 * total_s
+                dur_s   = 0.40 * total_s
+            # 1.5x slow-mo on top of the trim keeps the middle steady.
+            slowmo = 1.5
+            _ffmpeg_trim(out_mp4, highlight_mp4,
+                         start_s=start_s, dur_s=dur_s, slowmo=slowmo)
+            play_s = dur_s * slowmo
+            print(f"Wrote highlight clip: {highlight_mp4}  "
+                  f"(trim {start_s:.1f}s → {start_s + dur_s:.1f}s "
+                  f"= {dur_s:.1f}s source, {slowmo}× slowmo → {play_s:.1f}s playback)")
     elif args.skip_video:
         print("Skipping video by request.")
     else:

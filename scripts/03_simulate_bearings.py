@@ -67,7 +67,7 @@ def add_angular_noise(u: np.ndarray, sigma_theta: float, rng: np.random.Generato
 def main() -> None:
     _apply_dark_theme()
 
-    Path("results/plots").mkdir(parents=True, exist_ok=True)
+    Path("results/demos").mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(0)
 
     mu = 0.0121505856
@@ -184,7 +184,7 @@ def main() -> None:
         for spine in a.spines.values():
             spine.set_edgecolor(_BORDER)
 
-    fig.savefig("results/plots/03_bearings_report.png", dpi=200, bbox_inches="tight")
+    fig.savefig("results/demos/03_bearings_report.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
 
     fig, axs = plt.subplots(2, 1, figsize=(10, 6), sharex=True,
@@ -209,12 +209,12 @@ def main() -> None:
                       fontsize=13, pad=8)
     axs[1].set_xlabel("Time  [dimensionless CR3BP time]", color=_TEXT)
 
-    fig.savefig("results/plots/03_bearings_consistency.png", dpi=200, bbox_inches="tight")
+    fig.savefig("results/demos/03_bearings_consistency.png", dpi=200, bbox_inches="tight")
     plt.close(fig)
 
     print("Wrote:")
-    print("  results/plots/03_bearings_report.png")
-    print("  results/plots/03_bearings_consistency.png")
+    print("  results/demos/03_bearings_report.png")
+    print("  results/demos/03_bearings_consistency.png")
 
 
 if __name__ == "__main__":

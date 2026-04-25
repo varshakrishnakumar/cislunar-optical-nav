@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
         description="Multi-seed sensitivity sweeps over σ_px and tc.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--plots-dir", default="results/plots")
+    parser.add_argument("--plots-dir", default="results/mc/sensitivity_live")
     parser.add_argument("--n-seeds",   type=int, default=8,
                         help="Seeds per grid point.")
     parser.add_argument("--q-acc",     type=float, default=1e-14,

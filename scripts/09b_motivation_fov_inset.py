@@ -34,7 +34,7 @@ MOON_RADIUS_KM = 1737.4
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--hero", type=Path, default=Path("reports/motivation_visual.png"))
-    p.add_argument("--moon-texture", type=Path, default=Path("results/moon_texture.jpg"))
+    p.add_argument("--moon-texture", type=Path, default=Path("results/seeds/moon_texture.jpg"))
     p.add_argument("--out", type=Path, default=Path("reports/motivation_visual_fov.png"))
     p.add_argument("--range-km", type=float, default=15000.0,
                    help="Assumed Moon-relative range at tracking-phase waypoint.")

@@ -409,7 +409,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--study", default="baseline",
                    help="baseline | dropout | no_tracking | high_noise")
     p.add_argument("--n-trials",     type=int,   default=20)
-    p.add_argument("--plots-dir",    type=str,   default="results/plots")
+    p.add_argument("--plots-dir",    type=str,   default="results/mc/baseline_live")
     p.add_argument("--tol",          type=float, default=1e-3,
                    help="Miss tolerance for success-rate annotation.")
     p.add_argument("--no-plot-d",    action="store_true",
