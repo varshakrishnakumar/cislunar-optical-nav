@@ -1,0 +1,50 @@
+name: nrho_baseline
+
+scenario:
+  name: nrho_cr3bp
+  params:
+    mu: 0.0121505856
+    span_periods: 0.50
+    correction_at_period_frac: 0.40
+    dt_meas_periods: 0.005
+
+sensor:
+  name: camera_bearing
+  params:
+    target_body: Moon
+    fx: 400.0
+    fy: 400.0
+    cx: 320.0
+    cy: 240.0
+    width: 640
+    height: 480
+    sigma_px: 1.5
+    dropout_p: 0.0
+    pointing: estimate_tracking
+
+estimator:
+  name: iekf
+  params:
+    q_acc: 1.0e-9
+    rtol: 1.0e-10
+    atol: 1.0e-12
+    max_iterations: 3
+    gating_enabled: false
+
+guidance:
+  name: single_impulse
+  params:
+    max_iter: 10
+    tol: 1.0e-10
+
+trial:
+  seed: 7
+  sigma_r_inj: 1.0e-4
+  sigma_v_inj: 0.0
+  sigma_r_est: 1.0e-4
+  sigma_v_est: 0.0
+  planar_only: false  # NRHO has out-of-plane structure
+
+output:
+  out_dir: results/cisopt
+  save_debug: true

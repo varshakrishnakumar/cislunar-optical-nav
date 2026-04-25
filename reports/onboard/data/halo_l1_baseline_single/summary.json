@@ -1,0 +1,108 @@
+{
+  "config": {
+    "name": "halo_l1_baseline",
+    "scenario": {
+      "name": "halo_l1_cr3bp",
+      "params": {
+        "mu": 0.0121505856,
+        "t0_s": 0.0,
+        "tf_s": 6.0,
+        "tc_s": 2.0,
+        "dt_meas_s": 0.02
+      }
+    },
+    "sensor": {
+      "name": "camera_bearing",
+      "params": {
+        "target_body": "Moon",
+        "fx": 400.0,
+        "fy": 400.0,
+        "cx": 320.0,
+        "cy": 240.0,
+        "width": 640,
+        "height": 480,
+        "sigma_px": 1.5,
+        "dropout_p": 0.0,
+        "pointing": "estimate_tracking"
+      }
+    },
+    "estimator": {
+      "name": "iekf",
+      "params": {
+        "q_acc": 1e-09,
+        "rtol": 1e-10,
+        "atol": 1e-12,
+        "max_iterations": 3,
+        "gating_enabled": false
+      }
+    },
+    "guidance": {
+      "name": "single_impulse",
+      "params": {
+        "max_iter": 10,
+        "tol": 1e-10
+      }
+    },
+    "trial": {
+      "seed": 7,
+      "sigma_r_inj": 0.0001,
+      "sigma_v_inj": 0.0,
+      "sigma_r_est": 0.0001,
+      "sigma_v_est": 0.0,
+      "planar_only": true
+    },
+    "output": {
+      "out_dir": "results/cisopt",
+      "save_debug": true
+    }
+  },
+  "config_hash": "e8ac03725931adc6dce11978d46047b219fa102fce664435645a4ba89102afb3",
+  "seed": 7,
+  "metrics": {
+    "dv_perfect_mag": 0.00016691558224989843,
+    "dv_ekf_mag": 0.0010149206398256331,
+    "dv_delta_mag": 0.0010401426689382218,
+    "dv_inflation_pct": 5.080442737252296,
+    "miss_uncorrected": 0.0001311494004966325,
+    "miss_perfect": 4.8431898873114784e-11,
+    "miss_ekf": 0.0002003648687591544,
+    "pos_err_tc": 9.562295460244231e-05,
+    "trace_P_pos_tc": 1.889308908730695e-08,
+    "nis_mean": 1.6875316515362995,
+    "nees_mean": 27.881846011932254,
+    "valid_rate": 0.9900990099009901
+  },
+  "units": {
+    "length": "DU (CR3BP)",
+    "time": "TU (CR3BP)",
+    "velocity": "DU/TU"
+  },
+  "notes": {
+    "dv_perfect": [
+      0.0001568589211115998,
+      5.706216316901698e-05,
+      0.0
+    ],
+    "dv_ekf": [
+      -7.922259643701201e-05,
+      7.723918587660042e-06,
+      0.001011794458593
+    ],
+    "dx0": [
+      1.2301533574825744e-07,
+      2.987455375084699e-05,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "est_err": [
+      6.0143602597438486e-06,
+      0.00013402152455545336,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  }
+}

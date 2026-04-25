@@ -1,0 +1,18 @@
+# cisopt cislunar-optical-nav: pinned runtime dependencies (April 2026 venv).
+# Install with:  python3 -m pip install -r requirements.txt
+#
+# pyproject.toml is the canonical project manifest; this file is a frozen
+# snapshot for reproduction. Re-pin from the .cisopt venv when bumping versions.
+
+numpy==2.4.4
+scipy==1.17.1
+matplotlib==3.10.8
+opencv-python==4.13.0.92
+
+# Optional groups (mirrors pyproject.toml):
+#   high-fidelity  -> SPICE/JPL ephemeris scenarios + run_case_spice
+#   yaml-configs   -> YAML config files (alternative: stick to JSON/TOML)
+#   parquet        -> structured MC + ablation results store
+spiceypy==8.1.0
+PyYAML==6.0.3
+pyarrow==24.0.0

@@ -21,10 +21,17 @@ high-fidelity = [
 fast = [
     "numba",
 ]
+yaml-configs = [
+    "pyyaml",
+]
+parquet = [
+    "pyarrow",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["dynamics*", "nav*", "guidance*", "mc*", "orbits*", "utils*", "cv*", "visualization*"]
+include = ["cisopt*", "dynamics*", "nav*", "guidance*", "mc*", "orbits*", "utils*", "cv*", "visualization*"]
+

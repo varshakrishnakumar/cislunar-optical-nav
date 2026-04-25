@@ -1,0 +1,71 @@
+{
+  "run_id": "3e11a262680b",
+  "base_config": {
+    "name": "halo_l1_spice_ekf",
+    "scenario": {
+      "name": "halo_l1_spice",
+      "params": {
+        "mu": 0.0121505856,
+        "epoch": "2026 APR 10 00:00:00 TDB",
+        "duration_days": 6.5,
+        "correction_at_days": 2.5,
+        "dt_meas_min": 30.0,
+        "kernels": [
+          "data/kernels/naif0012.tls",
+          "data/kernels/de442s.bsp"
+        ]
+      }
+    },
+    "sensor": {
+      "name": "camera_bearing",
+      "params": {
+        "target_body": "Moon",
+        "fx": 400.0,
+        "fy": 400.0,
+        "cx": 320.0,
+        "cy": 240.0,
+        "width": 640,
+        "height": 480,
+        "sigma_px": 1.5,
+        "dropout_p": 0.0,
+        "pointing": "estimate_tracking"
+      }
+    },
+    "estimator": {
+      "name": "ekf",
+      "params": {
+        "q_acc": 1e-12,
+        "rtol": 1e-10,
+        "atol": 1e-12,
+        "gating_enabled": false
+      }
+    },
+    "guidance": {
+      "name": "single_impulse",
+      "params": {
+        "max_iter": 10,
+        "tol": 1e-10
+      }
+    },
+    "trial": {
+      "seed": 7,
+      "sigma_r_inj": 0.0001,
+      "sigma_v_inj": 0.0,
+      "sigma_r_est": 0.0001,
+      "sigma_v_est": 0.0,
+      "planar_only": true
+    },
+    "output": {
+      "out_dir": "results/cisopt",
+      "save_debug": true
+    }
+  },
+  "kind": "monte_carlo",
+  "n_trials": 32,
+  "base_seed": 7,
+  "n_workers": 1,
+  "n_failed": 0,
+  "elapsed_s": 126.19058387500081,
+  "overrides": {},
+  "combo_id": ""
+}

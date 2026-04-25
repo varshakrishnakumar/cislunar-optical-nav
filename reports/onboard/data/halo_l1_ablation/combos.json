@@ -1,0 +1,146 @@
+[
+  {
+    "combo_id": "c0000_fixed_1en11_0p5",
+    "overrides": {
+      "sensor.params.pointing": "fixed",
+      "estimator.params.q_acc": 1e-11,
+      "sensor.params.sigma_px": 0.5
+    }
+  },
+  {
+    "combo_id": "c0001_fixed_1en11_1p5",
+    "overrides": {
+      "sensor.params.pointing": "fixed",
+      "estimator.params.q_acc": 1e-11,
+      "sensor.params.sigma_px": 1.5
+    }
+  },
+  {
+    "combo_id": "c0002_fixed_1en11_3",
+    "overrides": {
+      "sensor.params.pointing": "fixed",
+      "estimator.params.q_acc": 1e-11,
+      "sensor.params.sigma_px": 3.0
+    }
+  },
+  {
+    "combo_id": "c0003_fixed_1en09_0p5",
+    "overrides": {
+      "sensor.params.pointing": "fixed",
+      "estimator.params.q_acc": 1e-09,
+      "sensor.params.sigma_px": 0.5
+    }
+  },
+  {
+    "combo_id": "c0004_fixed_1en09_1p5",
+    "overrides": {
+      "sensor.params.pointing": "fixed",
+      "estimator.params.q_acc": 1e-09,
+      "sensor.params.sigma_px": 1.5
+    }
+  },
+  {
+    "combo_id": "c0005_fixed_1en09_3",
+    "overrides": {
+      "sensor.params.pointing": "fixed",
+      "estimator.params.q_acc": 1e-09,
+      "sensor.params.sigma_px": 3.0
+    }
+  },
+  {
+    "combo_id": "c0006_fixed_1en07_0p5",
+    "overrides": {
+      "sensor.params.pointing": "fixed",
+      "estimator.params.q_acc": 1e-07,
+      "sensor.params.sigma_px": 0.5
+    }
+  },
+  {
+    "combo_id": "c0007_fixed_1en07_1p5",
+    "overrides": {
+      "sensor.params.pointing": "fixed",
+      "estimator.params.q_acc": 1e-07,
+      "sensor.params.sigma_px": 1.5
+    }
+  },
+  {
+    "combo_id": "c0008_fixed_1en07_3",
+    "overrides": {
+      "sensor.params.pointing": "fixed",
+      "estimator.params.q_acc": 1e-07,
+      "sensor.params.sigma_px": 3.0
+    }
+  },
+  {
+    "combo_id": "c0009_estimate_tracking_1en11_0p5",
+    "overrides": {
+      "sensor.params.pointing": "estimate_tracking",
+      "estimator.params.q_acc": 1e-11,
+      "sensor.params.sigma_px": 0.5
+    }
+  },
+  {
+    "combo_id": "c0010_estimate_tracking_1en11_1p5",
+    "overrides": {
+      "sensor.params.pointing": "estimate_tracking",
+      "estimator.params.q_acc": 1e-11,
+      "sensor.params.sigma_px": 1.5
+    }
+  },
+  {
+    "combo_id": "c0011_estimate_tracking_1en11_3",
+    "overrides": {
+      "sensor.params.pointing": "estimate_tracking",
+      "estimator.params.q_acc": 1e-11,
+      "sensor.params.sigma_px": 3.0
+    }
+  },
+  {
+    "combo_id": "c0012_estimate_tracking_1en09_0p5",
+    "overrides": {
+      "sensor.params.pointing": "estimate_tracking",
+      "estimator.params.q_acc": 1e-09,
+      "sensor.params.sigma_px": 0.5
+    }
+  },
+  {
+    "combo_id": "c0013_estimate_tracking_1en09_1p5",
+    "overrides": {
+      "sensor.params.pointing": "estimate_tracking",
+      "estimator.params.q_acc": 1e-09,
+      "sensor.params.sigma_px": 1.5
+    }
+  },
+  {
+    "combo_id": "c0014_estimate_tracking_1en09_3",
+    "overrides": {
+      "sensor.params.pointing": "estimate_tracking",
+      "estimator.params.q_acc": 1e-09,
+      "sensor.params.sigma_px": 3.0
+    }
+  },
+  {
+    "combo_id": "c0015_estimate_tracking_1en07_0p5",
+    "overrides": {
+      "sensor.params.pointing": "estimate_tracking",
+      "estimator.params.q_acc": 1e-07,
+      "sensor.params.sigma_px": 0.5
+    }
+  },
+  {
+    "combo_id": "c0016_estimate_tracking_1en07_1p5",
+    "overrides": {
+      "sensor.params.pointing": "estimate_tracking",
+      "estimator.params.q_acc": 1e-07,
+      "sensor.params.sigma_px": 1.5
+    }
+  },
+  {
+    "combo_id": "c0017_estimate_tracking_1en07_3",
+    "overrides": {
+      "sensor.params.pointing": "estimate_tracking",
+      "estimator.params.q_acc": 1e-07,
+      "sensor.params.sigma_px": 3.0
+    }
+  }
+]

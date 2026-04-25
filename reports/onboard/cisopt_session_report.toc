@@ -1,0 +1,19 @@
+\contentsline {section}{\numberline {1}Goal and method}{2}{section.1}%
+\contentsline {section}{\numberline {2}Resulting layout}{2}{section.2}%
+\contentsline {section}{\numberline {3}Brief items: status by item}{3}{section.3}%
+\contentsline {section}{\numberline {4}New protocol layer (item 6)}{3}{section.4}%
+\contentsline {section}{\numberline {5}Three publishable signals captured}{4}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Estimator consistency: NEES, not miss}{4}{subsection.5.1}%
+\contentsline {subsubsection}{\numberline {5.1.1}UKF deep-dive: distributions, not just means}{5}{subsubsection.5.1.1}%
+\contentsline {paragraph}{Under SPICE the filters converge to the same answer.}{5}{section*.7}%
+\contentsline {paragraph}{Computational cost.}{6}{section*.10}%
+\contentsline {paragraph}{Note on $\textrm {Phi\_step}$ and observability.}{6}{section*.11}%
+\contentsline {subsection}{\numberline {5.2}Observability vs.\ burn coupling}{6}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Realism stress: NIS without warning}{7}{subsection.5.3}%
+\contentsline {section}{\numberline {6}Monte Carlo and ablation outputs}{7}{section.6}%
+\contentsline {section}{\numberline {7}Multi-fidelity (item 12) and scenario library (item 11)}{7}{section.7}%
+\contentsline {section}{\numberline {8}Reproducibility (item 9)}{8}{section.8}%
+\contentsline {section}{\numberline {9}Reproducing this report's figures}{9}{section.9}%
+\contentsline {section}{\numberline {10}What was deferred and why}{10}{section.10}%
+\contentsline {section}{\numberline {11}Files added or changed in this session}{11}{section.11}%
+\contentsline {section}{\numberline {12}Conclusion}{13}{section.12}%
