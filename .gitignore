@@ -5,5 +5,6 @@ __pycache__/
 .vscode/
 data/cache/
 data/kernels/
-results/
+/results/
 .env
+results.zip
