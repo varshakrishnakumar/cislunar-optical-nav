@@ -34,8 +34,11 @@ from _analysis_common import (
     RED as _RED,
     TEXT as _TEXT,
     VIOLET as _VIOLET,
+    add_truth_arg,
     apply_dark_theme as _apply_dark_theme,
+    apply_truth_suffix,
     load_midcourse_run_case as _load_run_case,
+    tag_rows_with_truth,
     write_dict_rows_csv as _write_csv,
 )
 from _common import ensure_src_on_path, repo_path
@@ -47,18 +50,19 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--plots-dir", default="results/mc/fine_tune")
-    p.add_argument("--n-trials", type=int, default=100,
+    p.add_argument("--n-trials", type=int, default=500,
                    help="Trials per q_acc point.")
     p.add_argument("--tol", type=float, default=1e-3,
                    help="Miss tolerance for pass-rate.")
-    p.add_argument("--q-min-log10", type=float, default=-10.0,
+    p.add_argument("--q-min-log10", type=float, default=-12.0,
                    help="log10(q_acc) lower bound.")
-    p.add_argument("--q-max-log10", type=float, default=-6.0,
+    p.add_argument("--q-max-log10", type=float, default=-7.0,
                    help="log10(q_acc) upper bound.")
-    p.add_argument("--n-q", type=int, default=9,
+    p.add_argument("--n-q", type=int, default=11,
                    help="Number of q_acc grid points (logspace).")
     p.add_argument("--n-workers", type=int, default=-1,
                    help="Thread pool for MC. -1 uses cpu_count().")
+    add_truth_arg(p)
     return p.parse_args()
 
 
@@ -101,10 +105,10 @@ def main() -> None:
     from mc import run_monte_carlo
     from mc.types import MonteCarloConfig
 
-    run_case = _load_run_case()
+    run_case = _load_run_case(truth=args.truth)
 
     q_grid = np.logspace(args.q_min_log10, args.q_max_log10, int(args.n_q))
-    print(f"\n▸ 06E fine q_acc sweep — baseline regime", flush=True)
+    print(f"\n▸ 06E fine q_acc sweep — baseline regime  truth={args.truth}", flush=True)
     print(f"  n_trials/q = {args.n_trials}, n_q = {len(q_grid)}, tol = {args.tol}", flush=True)
     print(f"  q grid: {[f'{q:.1e}' for q in q_grid]}\n", flush=True)
 
@@ -148,10 +152,10 @@ def main() -> None:
     if not rows:
         raise RuntimeError("No successful sweep points.")
 
-    plots_dir = repo_path(args.plots_dir)
+    plots_dir = apply_truth_suffix(repo_path(args.plots_dir), args.truth)
     plots_dir.mkdir(parents=True, exist_ok=True)
     csv_path = plots_dir / "06e_fine_tune.csv"
-    _write_csv(csv_path, rows)
+    _write_csv(csv_path, tag_rows_with_truth(rows, args.truth))
     print(f"\nWrote CSV: {csv_path}")
 
     # Identify best "honest" q_acc:
@@ -162,8 +166,22 @@ def main() -> None:
         if r["nees_in_band_frac"] >= 0.90
         and lb6 <= r["nees_median"] <= ub6
     ]
-    best_honest = max(honest, key=lambda r: r["pass_rate"]) if honest else None
-    best_raw    = max(rows,   key=lambda r: r["pass_rate"])
+    # Tie-break: among trials with the top pass_rate (within 0.5%), find
+    # the leaders with NEES in-band fraction within 0.5pp of the maximum
+    # (i.e. statistically indistinguishable consistency), then pick the
+    # *smallest* q_acc — the textbook "minimum process noise that achieves
+    # consistency" rule (Bar-Shalom §5.4).  Avoids drifting toward larger
+    # q just because of MC noise on the in-band fraction.
+    if honest:
+        best_pr = max(r["pass_rate"] for r in honest)
+        leaders = [r for r in honest if r["pass_rate"] >= best_pr - 0.005]
+        best_band = max(r["nees_in_band_frac"] for r in leaders)
+        equally_calibrated = [r for r in leaders
+                              if r["nees_in_band_frac"] >= best_band - 0.005]
+        best_honest = min(equally_calibrated, key=lambda r: r["q_acc"])
+    else:
+        best_honest = None
+    best_raw = max(rows, key=lambda r: r["pass_rate"])
 
     print("\n── recommendation ─────────────────────────────")
     print(f"  χ²(6) 95% band: [{lb6:.2f}, {ub6:.2f}]")
@@ -194,11 +212,10 @@ def _make_plots(rows, plots_dir: Path, *, tol: float,
     `06e_sweep_summary.png` — stacked 2-panel:
       top    = performance (pass rate) across the q_acc sweep
       bottom = consistency (NEES median + P95 vs χ²(6) 95% band,
-               NIS overlay rescaled to the same axis via secondary spine)
+               NIS overlay on the same axis vs its χ²(2) nominal)
 
-    The single figure shows: performance is flat, filter is honestly
-    χ²-consistent, and the chosen q_acc lives on the safe side of the
-    band. No annotation boxes — all callouts live in axis titles.
+    Layout uses in-panel headers (not Axes titles) so spacing never
+    collides with markers, annotations, or the suptitle.
     """
     import matplotlib.pyplot as plt
 
@@ -206,101 +223,132 @@ def _make_plots(rows, plots_dir: Path, *, tol: float,
     pr     = np.array([r["pass_rate"]        for r in rows]) * 100.0
     nmed   = np.array([r["nees_median"]      for r in rows])
     npxx   = np.array([r["nees_p95"]         for r in rows])
-    mmed   = np.array([r["miss_median"]      for r in rows])
     nismed = np.array([r["nis_median"]       for r in rows])
+    n_tr   = int(rows[0].get("n_trials", 0))
     lb6, ub6 = band
 
     chosen_q = best_honest["q_acc"] if best_honest is not None else None
-    q_min, q_max = float(q.min()), float(q.max())
 
     # ─── Figure · Sweep summary ──────────────────────────────────────
     fig, (axP, axC) = plt.subplots(
-        2, 1, figsize=(11, 9), facecolor=_BG, sharex=True,
-        gridspec_kw={"height_ratios": [0.9, 1.5], "hspace": 0.12},
+        2, 1, figsize=(14, 9), facecolor=_BG, sharex=True,
+        gridspec_kw={"height_ratios": [0.7, 1.6], "hspace": 0.18},
     )
+    fig.subplots_adjust(left=0.075, right=0.975, top=0.90, bottom=0.16)
 
     # ── Top · PERFORMANCE ────────────────────────────────────────────
     axP.set_facecolor(_PANEL)
-    axP.plot(q, pr, "-o", color=_CYAN, lw=3.0, ms=11,
+    axP.plot(q, pr, "-o", color=_CYAN, lw=2.6, ms=9,
              markeredgecolor=_TEXT, markeredgewidth=0.8, zorder=4)
     for xi, yi in zip(q, pr):
         axP.annotate(f"{yi:.1f}%", (xi, yi), textcoords="offset points",
-                     xytext=(0, 12), ha="center", color=_TEXT, fontsize=10,
-                     fontweight="bold")
+                     xytext=(0, -16), ha="center", va="top",
+                     color=_TEXT, fontsize=9, fontweight="bold")
 
-    axP.set_ylim(60, 105)
-    axP.set_ylabel("P(miss < tol)   [%]", color=_CYAN, fontweight="bold", fontsize=11)
+    axP.set_ylim(40, 110)
+    axP.set_yticks([50, 75, 100])
+    axP.set_ylabel("P(miss < tol)  [%]", color=_CYAN, fontweight="bold", fontsize=11)
     axP.tick_params(axis="y", colors=_CYAN)
-    axP.set_title(
-        f"Performance · 99% pass rate across the entire q_acc sweep (tol = {tol:g})",
-        color=_TEXT, fontweight="bold", pad=10, fontsize=12,
+    # In-panel header (left-aligned) — never collides with the suptitle
+    pr_lo, pr_hi = float(pr.min()), float(pr.max())
+    if pr_hi - pr_lo < 1.0:
+        perf_msg = f"pass rate held at {pr_hi:.0f}% across the full q_acc range"
+    else:
+        perf_msg = f"pass rate spans {pr_lo:.0f}–{pr_hi:.0f}% across the full q_acc range"
+    axP.text(
+        0.005, 1.06,
+        f"Performance — {perf_msg}  (tol = {tol:g})",
+        transform=axP.transAxes, color=_TEXT, fontweight="bold",
+        fontsize=11.5, ha="left", va="bottom",
     )
     axP.grid(True, color=_BORDER, alpha=0.35, which="major")
     if chosen_q is not None:
-        axP.axvline(chosen_q, color=_VIOLET, lw=1.8, ls=":", alpha=0.95, zorder=2)
+        axP.axvline(chosen_q, color=_VIOLET, lw=1.6, ls=":", alpha=0.95, zorder=2)
     for sp in axP.spines.values(): sp.set_edgecolor(_BORDER)
 
     # ── Bottom · CONSISTENCY (NEES dominant + NIS overlay) ───────────
     axC.set_facecolor(_PANEL)
-    # χ²(6) band
-    axC.axhspan(lb6, ub6, color=_GREEN, alpha=0.22, zorder=0)
-    axC.text(q_min * 1.08, (lb6 + ub6) / 2,
-             f"χ²(6) 95% band\n[{lb6:.1f} – {ub6:.1f}]",
-             color=_GREEN, fontsize=10, fontweight="bold", va="center",
-             alpha=0.85)
-    # Nominal NEES line
-    axC.axhline(6.0, color=_TEXT, lw=0.9, ls="--", alpha=0.55, zorder=1)
-    axC.text(q_max, 6.0, "  nominal NEES = 6", color=_TEXT,
-             fontsize=9, va="center", ha="left", alpha=0.7)
 
-    # NEES envelope + markers
-    axC.fill_between(q, nmed, npxx, color=_RED, alpha=0.25, zorder=2,
-                     label="NEES median → P95")
-    axC.plot(q, npxx, "-s", color=_ORANGE, lw=1.6, ms=8,
-             markeredgecolor=_TEXT, markeredgewidth=0.5, alpha=0.9, zorder=3,
+    # χ²(6) 95% band
+    axC.axhspan(lb6, ub6, color=_GREEN, alpha=0.16, zorder=0)
+    # band edge tick lines for clarity
+    axC.axhline(lb6, color=_GREEN, lw=0.8, ls="-", alpha=0.55, zorder=0)
+    axC.axhline(ub6, color=_GREEN, lw=0.8, ls="-", alpha=0.55, zorder=0)
+
+    # Reference lines (drawn behind data)
+    axC.axhline(6.0, color=_TEXT, lw=0.9, ls="--", alpha=0.55, zorder=1)
+    axC.axhline(2.0, color=_CYAN, lw=0.9, ls=":",  alpha=0.60, zorder=1)
+
+    # NEES envelope (median → P95) and markers
+    axC.fill_between(q, nmed, npxx, color=_RED, alpha=0.22, zorder=2,
+                     label="NEES envelope (median → P95)")
+    axC.plot(q, npxx, "-s", color=_ORANGE, lw=1.6, ms=7,
+             markeredgecolor=_TEXT, markeredgewidth=0.5, alpha=0.95, zorder=3,
              label="NEES P95")
-    axC.plot(q, nmed, "-o", color=_RED, lw=3.0, ms=11,
+    axC.plot(q, nmed, "-o", color=_RED, lw=2.6, ms=9,
              markeredgecolor=_TEXT, markeredgewidth=0.8, zorder=5,
              label="NEES median")
 
-    # NIS overlay on same axis for comparison with χ²(2) nominal
-    axC.axhline(2.0, color=_CYAN, lw=0.9, ls=":", alpha=0.6, zorder=1)
-    axC.plot(q, nismed, "-D", color=_CYAN, lw=2.0, ms=8,
-             markeredgecolor=_TEXT, markeredgewidth=0.5, alpha=0.9, zorder=4,
-             label="NIS median (χ²(2) nominal = 2)")
+    # NIS median (χ²(2) nominal = 2)
+    axC.plot(q, nismed, "-D", color=_CYAN, lw=2.0, ms=7,
+             markeredgecolor=_TEXT, markeredgewidth=0.5, alpha=0.95, zorder=4,
+             label="NIS median  (χ²(2) nominal = 2)")
 
-    # Vertical line at chosen q
     if chosen_q is not None:
-        axC.axvline(chosen_q, color=_VIOLET, lw=1.8, ls=":", alpha=0.95, zorder=2)
+        axC.axvline(chosen_q, color=_VIOLET, lw=1.6, ls=":", alpha=0.95, zorder=2)
 
     axC.set_xscale("log")
     axC.set_xlabel("q_acc   [dimensionless CR3BP acceleration density]",
                    color=_TEXT, fontweight="bold", fontsize=11)
-    axC.set_ylabel("NEES / NIS", color=_TEXT, fontweight="bold", fontsize=11)
-    axC.set_ylim(0, max(float(npxx.max()) * 1.25, ub6 * 1.15))
-
-    subtitle = (
-        f"Consistency · NEES envelope stays within the χ²(6) band"
-    )
-    if best_honest is not None:
-        subtitle += (
-            f"   ·   chosen q_acc = {best_honest['q_acc']:.1e}"
-            f"   ·   {best_honest['nees_in_band_frac']*100:.0f}% of trials in-band"
-        )
-    axC.set_title(subtitle, color=_TEXT, fontweight="bold", pad=10, fontsize=12)
+    axC.set_ylabel("NEES  /  NIS", color=_TEXT, fontweight="bold", fontsize=11)
+    y_top = max(float(np.nanmax(npxx)) * 1.18, ub6 * 1.20)
+    axC.set_ylim(0, y_top)
     axC.grid(True, color=_BORDER, alpha=0.35, which="major")
     for sp in axC.spines.values(): sp.set_edgecolor(_BORDER)
 
-    axC.legend(loc="upper right", facecolor=_PANEL, edgecolor=_BORDER,
-               labelcolor=_TEXT, framealpha=0.95, fontsize=10)
+    # In-panel header — single line, won't overlap markers or legend
+    sub = "Consistency — NEES envelope tracks the χ²(6) 95% band"
+    if best_honest is not None:
+        sub += (
+            f"   ·   chosen q_acc = {best_honest['q_acc']:.1e}"
+            f"   ·   {best_honest['nees_in_band_frac']*100:.0f}% of trials in-band"
+        )
+    axC.text(0.005, 1.025, sub, transform=axC.transAxes,
+             color=_TEXT, fontweight="bold", fontsize=11.5,
+             ha="left", va="bottom")
 
+    # In-panel reference labels (Axes-fraction x, data-space y).
+    # χ²(6) band label sits at the band's top edge, away from the y-axis
+    # ticks and away from the chosen-q vertical line.
+    axC.text(0.30, ub6, f"  χ²(6) 95% band  [{lb6:.1f} – {ub6:.1f}]",
+             transform=axC.get_yaxis_transform(),
+             color=_GREEN, fontsize=9.5, fontweight="bold",
+             ha="left", va="bottom", alpha=0.95)
+    axC.text(0.30, 6.0, "  nominal NEES = 6",
+             transform=axC.get_yaxis_transform(),
+             color=_TEXT, fontsize=9, ha="left", va="bottom", alpha=0.75)
+    axC.text(0.30, 2.0, "  nominal NIS = 2",
+             transform=axC.get_yaxis_transform(),
+             color=_CYAN, fontsize=9, ha="left", va="bottom", alpha=0.85)
+
+    # Legend goes BELOW the bottom panel — never overlaps data or band labels.
+    leg = axC.legend(
+        loc="upper center", bbox_to_anchor=(0.5, -0.22),
+        facecolor=_PANEL, edgecolor=_BORDER, labelcolor=_TEXT,
+        framealpha=0.95, fontsize=10, ncol=4,
+        handlelength=2.2, columnspacing=1.6, borderaxespad=0.4,
+    )
+    leg.get_frame().set_linewidth(0.6)
+
+    # ── Suptitle (top) ───────────────────────────────────────────────
+    n_pts = len(rows)
     fig.suptitle(
-        "Fine q_acc Tuning  ·  Baseline MC, 500 trials per point",
-        color=_TEXT, fontweight="bold", fontsize=15, y=0.995,
+        f"Fine q_acc Tuning  ·  Baseline MC  ·  {n_tr} trials × {n_pts} q-points",
+        color=_TEXT, fontweight="bold", fontsize=15, y=0.975,
     )
 
     fig.savefig(plots_dir / "06e_sweep_summary.png",
-                dpi=240, facecolor=_BG, bbox_inches="tight", pad_inches=0.3)
+                dpi=220, facecolor=_BG)
     plt.close(fig)
 
     print(f"Wrote plot: {plots_dir / '06e_sweep_summary.png'}")

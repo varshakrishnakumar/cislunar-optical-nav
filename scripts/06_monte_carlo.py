@@ -5,7 +5,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from _analysis_common import load_midcourse_run_case
+from _analysis_common import (
+    add_truth_arg,
+    apply_truth_suffix,
+    inject_truth_column_into_csv,
+    load_midcourse_run_case,
+)
 
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
@@ -97,6 +102,18 @@ def _build_config(args: argparse.Namespace) -> Any:
     if args.camera_mode  is not None:
         preset["camera_mode"]  = str(args.camera_mode)
     preset["q_acc"] = float(args.q_acc)
+
+    # Realism knobs default to off; CLI override resolves per call.
+    if args.sigma_att_deg is not None:
+        preset["sigma_att_rad"] = float(args.sigma_att_deg) * np.pi / 180.0
+    elif args.sigma_att_rad is not None:
+        preset["sigma_att_rad"] = float(args.sigma_att_rad)
+    if args.pointing_lag_steps is not None:
+        preset["pointing_lag_steps"] = int(args.pointing_lag_steps)
+    if args.meas_delay_steps is not None:
+        preset["meas_delay_steps"] = int(args.meas_delay_steps)
+    if args.P0_scale is not None:
+        preset["P0_scale"] = float(args.P0_scale)
 
     import dataclasses
     valid_fields = {f.name for f in dataclasses.fields(MonteCarloConfig)}
@@ -429,6 +446,24 @@ def _parse_args() -> argparse.Namespace:
                    help="estimate_tracking | fixed")
     p.add_argument("--q-acc",        type=float, default=1e-14,
                    help="EKF process-noise density (ND CR3BP units).")
+    p.add_argument("--sigma-att-deg", type=float, default=None,
+                   help="Per-step attitude (pointing) noise σ in degrees. "
+                        "Mutually exclusive with --sigma-att-rad; deg wins.")
+    p.add_argument("--sigma-att-rad", type=float, default=None,
+                   help="Per-step attitude (pointing) noise σ in radians.")
+    p.add_argument("--pointing-lag-steps", type=int, default=None,
+                   help="N measurement steps the camera lags behind the "
+                        "current estimate (estimate_tracking only).")
+    p.add_argument("--meas-delay-steps",   type=int, default=None,
+                   help="Measurement-delay simulation: truth used to build "
+                        "the measurement is from N steps ago.")
+    p.add_argument("--P0-scale",     type=float, default=None,
+                   help="Multiplier on the diagonal of the initial filter "
+                        "covariance (1.0 = baseline).")
+    p.add_argument("--n-workers",    type=int,   default=-1,
+                   help="MC worker pool size. -1 = cpu_count(); 1 = sequential. "
+                        "Critical for SPICE truth: n=1000 single-threaded ≈ 3 hours.")
+    add_truth_arg(p)
 
     return p.parse_args()
 
@@ -442,30 +477,38 @@ def main() -> None:
     from mc import run_monte_carlo, save_results_csv, summarize_results
     from mc.sampler import make_trial_rng, sample_estimation_error, sample_injection_error
 
-    run_case = load_midcourse_run_case()
+    run_case = load_midcourse_run_case(truth=args.truth)
     config   = _build_config(args)
+
+    # Phase C: unit conventions. CR3BP outputs in ND, SPICE in km / km·s.
+    # The ND-tuned --tol gets rescaled to native units so success_rate
+    # remains meaningful under either truth mode.
+    from utils.units import RunUnits
+    units = RunUnits.for_truth(args.truth)
+    tol_native = units.length_threshold_native(float(args.tol))
 
     cam = getattr(config, "camera_mode",
                   getattr(config, "tracking_attitude", "unknown"))
     print(
         f"\n▸ 06C Monte Carlo — study={config.study_name}  "
-        f"n_trials={config.n_trials}\n"
+        f"n_trials={config.n_trials}  truth={args.truth}\n"
         f"  mu={config.mu}  t0={config.t0}  tf={config.tf}  tc={config.tc}\n"
         f"  sigma_px={config.sigma_px}  dropout_prob={config.dropout_prob}  "
         f"camera={cam}\n"
     )
 
-    results = run_monte_carlo(config, run_case)
+    results = run_monte_carlo(config, run_case, n_workers=int(args.n_workers))
 
     if not results:
         print("ERROR: no trials completed — check run_case() and config.", file=sys.stderr)
         sys.exit(1)
 
-    plots_dir = repo_path(args.plots_dir)
+    plots_dir = apply_truth_suffix(repo_path(args.plots_dir), args.truth)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     csv_path = plots_dir / f"06c_{config.study_name}_results.csv"
     save_results_csv(results, csv_path)
+    inject_truth_column_into_csv(csv_path, args.truth)
 
     def _arr(attr: str) -> np.ndarray:
         out = []
@@ -486,7 +529,7 @@ def main() -> None:
     nis_mean     = _arr("nis_mean")
     valid_rate   = _arr("valid_rate")
 
-    summary = summarize_results(results, tol=float(args.tol))
+    summary = summarize_results(results, tol=tol_native)
     n       = len(results)
 
     def _summary_stat(metric: str, stat: str) -> float:
@@ -497,7 +540,7 @@ def main() -> None:
 
     _plot_hist(
         dv_delta,
-        xlabel="‖Δv_ekf − Δv_perfect‖  [dimensionless CR3BP velocity]",
+        xlabel=units.velocity_axis("‖Δv_ekf − Δv_perfect‖"),
         title=f"Burn Error Magnitude  ·  {config.study_name}  (n={n})",
         outpath=plots_dir / "06c_hist_dv_delta_mag.png",
         color=_CYAN,
@@ -506,7 +549,7 @@ def main() -> None:
 
     _plot_hist(
         dv_bias,
-        xlabel="|Δv_EKF| − |Δv_perfect|  [dimensionless CR3BP velocity]",
+        xlabel=units.velocity_axis("|Δv_EKF| − |Δv_perfect|"),
         title=f"Burn-Magnitude Bias  ·  {config.study_name}  (n={n})",
         outpath=plots_dir / "06c_hist_dv_mag_bias.png",
         color=_CYAN,
@@ -528,11 +571,11 @@ def main() -> None:
 
     _plot_hist(
         miss_ekf,
-        xlabel="‖r_ekf(tf) − r_target‖  [dimensionless CR3BP length]",
+        xlabel=units.length_axis("‖r_ekf(tf) − r_target‖"),
         title=f"EKF Terminal Miss  ·  {config.study_name}  (n={n})",
         outpath=plots_dir / "06c_hist_miss_ekf.png",
         color=_VIOLET,
-        tol=float(args.tol),
+        tol=tol_native,
     )
 
     _plot_hist(
@@ -629,7 +672,8 @@ def main() -> None:
           f"p95={_summary_stat('miss_ekf', 'p95'):.3e}")
     if "success_rate" in summary:
         print(f"  success_rate      : {summary['success_rate']:.3f}"
-              f"  (tol={args.tol:g})")
+              f"  (tol={tol_native:g} {units.length_label}, "
+              f"= {args.tol:g} ND)")
     print("=" * 62)
 
     print("\nOutputs:")

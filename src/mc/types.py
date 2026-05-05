@@ -36,6 +36,12 @@ class MonteCarloConfig:
 
     q_acc: float = 1e-14
 
+    # Realism knobs (all default-off so existing studies are unchanged):
+    sigma_att_rad: float = 0.0
+    pointing_lag_steps: int = 0
+    meas_delay_steps: int = 0
+    P0_scale: float = 1.0
+
     def __post_init__(self) -> None:
         if not (0.0 < self.mu < 0.5):
             raise ValueError(f"mu must be in (0, 0.5), got {self.mu}")
@@ -60,6 +66,20 @@ class MonteCarloConfig:
         for name in ("sigma_r_inj", "sigma_v_inj", "sigma_r_est", "sigma_v_est"):
             if getattr(self, name) < 0.0:
                 raise ValueError(f"{name} must be >= 0, got {getattr(self, name)}")
+        if self.sigma_att_rad < 0.0:
+            raise ValueError(
+                f"sigma_att_rad must be >= 0, got {self.sigma_att_rad}"
+            )
+        if self.pointing_lag_steps < 0:
+            raise ValueError(
+                f"pointing_lag_steps must be >= 0, got {self.pointing_lag_steps}"
+            )
+        if self.meas_delay_steps < 0:
+            raise ValueError(
+                f"meas_delay_steps must be >= 0, got {self.meas_delay_steps}"
+            )
+        if self.P0_scale <= 0.0:
+            raise ValueError(f"P0_scale must be > 0, got {self.P0_scale}")
 
 
 @dataclass(frozen=True)

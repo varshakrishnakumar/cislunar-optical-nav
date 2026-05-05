@@ -18,9 +18,12 @@ from _analysis_common import (
     GREEN as _GREEN,
     RED as _RED,
     VIOLET as _VIOLET,
+    add_truth_arg,
     apply_dark_theme as _apply_dark_theme,
+    apply_truth_suffix,
     load_midcourse_run_case as _load_run_case,
     plot_xy as _plot_xy,
+    tag_rows_with_truth,
     write_dict_rows_csv as _write_csv,
 )
 from _common import repo_path
@@ -34,15 +37,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plots-dir", default="results/mc/q_acc_sweep")
     parser.add_argument("--n-seeds",   type=int, default=8,
                         help="Monte-Carlo seeds per q_acc point.")
+    add_truth_arg(parser)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     _apply_dark_theme()
-    run_case = _load_run_case()
+    run_case = _load_run_case(truth=args.truth)
+    print(f"▸ 06D q_acc sweep — truth={args.truth}")
 
-    plots_dir = repo_path(args.plots_dir)
+    plots_dir = apply_truth_suffix(repo_path(args.plots_dir), args.truth)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     mu       = 0.0121505856
@@ -90,7 +95,7 @@ def main() -> None:
               f"miss median={rows[-1]['miss_median']:.3e}")
 
     csv_path = plots_dir / "06d_q_acc_sweep.csv"
-    _write_csv(csv_path, rows)
+    _write_csv(csv_path, tag_rows_with_truth(rows, args.truth))
 
     q_arr     = np.array([r["q_acc"] for r in rows])
     nees_med  = np.array([r["nees_median"] for r in rows])

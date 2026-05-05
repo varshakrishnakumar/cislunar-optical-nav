@@ -11,7 +11,9 @@ from _analysis_common import (
     GREEN as _GREEN,
     RED as _RED,
     VIOLET as _VIOLET,
+    add_truth_arg,
     apply_dark_theme as _apply_dark_theme,
+    apply_truth_suffix,
     default_dx0_est_err as _default_dx0_est_err,
     load_midcourse_run_case as _load_run_case,
     maybe_import_sampler as _maybe_import_sampler,
@@ -19,6 +21,7 @@ from _analysis_common import (
     safe_mean as _safe_mean,
     safe_std as _safe_std,
     sample_errors as _sample_errors,
+    tag_rows_with_truth,
     write_dict_rows_csv as _write_csv,
 )
 from _common import repo_path
@@ -103,13 +106,15 @@ def main() -> None:
     p.add_argument("--sigma-v-inj",  type=float, default=1e-4)
     p.add_argument("--sigma-r-est",  type=float, default=1e-4)
     p.add_argument("--sigma-v-est",  type=float, default=1e-4)
+    add_truth_arg(p)
 
     args = p.parse_args()
 
-    run_case = _load_run_case()
+    run_case = _load_run_case(truth=args.truth)
     sampler_mod = _maybe_import_sampler()
+    print(f"▸ 06B Sensitivity MC — truth={args.truth}")
 
-    plots_dir = repo_path(args.plots_dir)
+    plots_dir = apply_truth_suffix(repo_path(args.plots_dir), args.truth)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     sigma_grid = np.array([0.5, 1.0, 1.5, 2.0, 3.0, 5.0], dtype=float)
@@ -163,7 +168,7 @@ def main() -> None:
                      "tc": float(args.tc), **stats})
 
     csv_path = plots_dir / "06b_sensitivity_mc.csv"
-    _write_csv(csv_path, rows)
+    _write_csv(csv_path, tag_rows_with_truth(rows, args.truth))
 
     def _sel(sweep_id: float) -> List[Dict[str, float]]:
         return [r for r in rows if float(r["sweep"]) == sweep_id]

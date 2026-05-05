@@ -150,10 +150,54 @@ def off_boresight_angle(
     return float(np.arccos(c))
 
 
+def _skew(v: Array) -> Array:
+    return np.array(
+        [[0.0, -v[2], v[1]],
+         [v[2], 0.0, -v[0]],
+         [-v[1], v[0], 0.0]],
+        dtype=np.float64,
+    )
+
+
+def small_rotation_dcm(theta: Array) -> Array:
+    """Rodrigues exp([θ]_×) — exact small-rotation DCM for axis-angle θ ∈ R³."""
+    th = np.asarray(theta, dtype=np.float64)
+    if th.shape != (3,):
+        raise ValueError(f"theta must have shape (3,), got {th.shape}")
+    angle = float(np.linalg.norm(th))
+    K = _skew(th)
+    if angle < 1e-12:
+        # Second-order Taylor — preserves orthogonality to O(θ²).
+        return np.eye(3) + K + 0.5 * (K @ K)
+    s = np.sin(angle) / angle
+    c = (1.0 - np.cos(angle)) / (angle * angle)
+    return np.eye(3) + s * K + c * (K @ K)
+
+
+def random_small_rotation_dcm(
+    rng: np.random.Generator,
+    sigma_rad: float,
+) -> Array:
+    """Sample a small-angle rotation DCM with isotropic Gaussian axis-angle.
+
+    Each component of θ is drawn iid N(0, σ²); the resulting DCM is
+    R = exp([θ]_×). For σ ≲ 0.01 rad the per-axis rotation magnitudes are
+    well-approximated as Gaussian with std σ; for larger σ the
+    distribution wraps and this approximation degrades.
+    """
+    s = float(sigma_rad)
+    if s <= 0.0:
+        return np.eye(3, dtype=np.float64)
+    theta = rng.normal(loc=0.0, scale=s, size=3)
+    return small_rotation_dcm(theta)
+
+
 __all__ = [
     "normalize",
     "desired_los_from_estimate",
     "camera_dcm_from_boresight",
     "estimate_based_camera_attitude",
     "off_boresight_angle",
+    "small_rotation_dcm",
+    "random_small_rotation_dcm",
 ]

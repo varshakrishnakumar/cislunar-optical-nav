@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import ClassVar, Sequence
 
 import numpy as np
 
@@ -34,6 +34,24 @@ class SpiceEphemeris:
     aberration_correction: str = "NONE"
     load_on_init: bool = True
 
+    # Process-global lock around `furnsh` / `unload` / `str2et`. SPICE is
+    # not thread-safe; the kernel pool and ZZRVAR/RDTEXT routines fail with
+    # "file already open" or BADSUBSCRIPT errors when multiple threads call
+    # them concurrently. The MC runner uses a ThreadPoolExecutor, so every
+    # SpiceEphemeris instance touching kernels must serialize against this
+    # lock. Held only across SPICE state mutations, not across long
+    # propagations, so the multi-worker speedup is preserved.
+    import threading as _threading
+    _SPICE_LOCK: ClassVar[_threading.Lock] = _threading.Lock()
+    del _threading
+
+    # Process-wide cache of kernel paths already passed to ``furnsh``. SPICE
+    # tolerates re-loading the same kernel but it's wasteful; more
+    # importantly, every redundant ``furnsh`` is another concurrency hazard
+    # against threads doing ``spkpos`` reads. Skip re-loads from any
+    # ``SpiceEphemeris`` instance in this process.
+    _LOADED_KERNELS: ClassVar[set[str]] = set()
+
     def __post_init__(self) -> None:
         self._spice = _import_spiceypy()
         self._loaded = False
@@ -48,30 +66,43 @@ class SpiceEphemeris:
         return self._epoch_et
 
     def load(self) -> None:
-        if not self._loaded:
-            for kernel in self.kernels:
-                kernel_path = Path(kernel).expanduser()
-                if not kernel_path.exists():
-                    msg = f"SPICE kernel does not exist: {kernel_path}"
-                    txt_path = Path(str(kernel_path) + ".txt")
-                    if txt_path.exists():
-                        msg += f" (found {txt_path}; pass that path or rename it to {kernel_path.name})"
-                    raise FileNotFoundError(msg)
-                self._spice.furnsh(str(kernel_path))
-            self._loaded = True
+        if self._loaded and self._epoch_et is not None:
+            return
+        with SpiceEphemeris._SPICE_LOCK:
+            if not self._loaded:
+                for kernel in self.kernels:
+                    kernel_path = Path(kernel).expanduser()
+                    if not kernel_path.exists():
+                        msg = f"SPICE kernel does not exist: {kernel_path}"
+                        txt_path = Path(str(kernel_path) + ".txt")
+                        if txt_path.exists():
+                            msg += f" (found {txt_path}; pass that path or rename it to {kernel_path.name})"
+                        raise FileNotFoundError(msg)
+                    key = str(kernel_path)
+                    if key not in SpiceEphemeris._LOADED_KERNELS:
+                        self._spice.furnsh(key)
+                        SpiceEphemeris._LOADED_KERNELS.add(key)
+                self._loaded = True
 
-        if self._epoch_et is None:
-            if isinstance(self.epoch, (int, float)):
-                self._epoch_et = float(self.epoch)
-            else:
-                self._epoch_et = float(self._spice.str2et(str(self.epoch)))
+            if self._epoch_et is None:
+                if isinstance(self.epoch, (int, float)):
+                    self._epoch_et = float(self.epoch)
+                else:
+                    self._epoch_et = float(self._spice.str2et(str(self.epoch)))
 
     def unload(self) -> None:
         if not self._loaded:
             return
-        for kernel in reversed(self.kernels):
-            self._spice.unload(str(Path(kernel).expanduser()))
-        self._loaded = False
+        # Process-wide cache for already-loaded kernels: see
+        # ``_LOADED_KERNELS``. Calling ``unload`` here would tear down the
+        # SPICE pool while sibling threads in a Monte-Carlo run are mid-
+        # ``spkpos`` lookup — that race surfaces as
+        # ``SPICE(INVALIDINDEX)`` / ``SPICE(BADSUBSCRIPT)`` from the
+        # CLPOOL→ZZLDKER chain. Treat unload as a soft no-op and let the
+        # kernel pool persist for the lifetime of the process; the cost is
+        # a few kB of unreleased kernels until exit.
+        with SpiceEphemeris._SPICE_LOCK:
+            self._loaded = False
 
     def close(self) -> None:
         self.unload()

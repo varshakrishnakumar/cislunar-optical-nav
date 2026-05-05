@@ -49,11 +49,20 @@ def main() -> int:
 
     TOP_DIM_ALPHA = 0.82  # fade the top pipeline row so the loop story dominates
 
-    fig, ax = plt.subplots(figsize=(19, 12))
+    # Native aspect targets the slide-5 placement (18.0 × 6.73 in) so the
+    # PNG renders unstretched on the slide.  All legacy y-coordinates were
+    # designed at ylim=(0, 64); we apply a single YS scale factor to fit
+    # them inside ylim=(0, Y_MAX) where Y_MAX preserves the equal-aspect
+    # convention with xlim=(0, 100).
+    FIG_W, FIG_H = 18.0, 6.73
+    Y_MAX = 100.0 * FIG_H / FIG_W
+    YS = Y_MAX / 64.0  # ≈ 0.584 — scale every y/h literal in the layout
+
+    fig, ax = plt.subplots(figsize=(FIG_W, FIG_H))
     fig.patch.set_facecolor(BG)
     ax.set_facecolor(BG)
     ax.set_xlim(0, 100)
-    ax.set_ylim(0, 64)
+    ax.set_ylim(0, Y_MAX)
     ax.set_aspect("equal")
     ax.axis("off")
 
@@ -75,14 +84,15 @@ def main() -> int:
             # or block content inside the zone. A solid BG bbox keeps arrows
             # passing through the header area from clipping the text.
             ax.text(
-                x + 1.4, y + h + 0.35, label,
+                x + 1.4, y + h + 0.35 * YS, label,
                 color=color, fontsize=7.6, fontweight="bold",
                 ha="left", va="bottom", alpha=0.85, zorder=8,
                 bbox=dict(facecolor=BG, edgecolor="none", pad=1.6),
             )
 
     def draw_phase_pill(cx: float, cy: float, phase_text: str, accent: str) -> None:
-        pill_w, pill_h = 4.6, 1.7
+        pill_w = 4.6
+        pill_h = 1.7 * YS
         ax.add_patch(FancyBboxPatch(
             (cx - pill_w / 2, cy - pill_h / 2),
             pill_w, pill_h,
@@ -206,8 +216,10 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Layout constants.
     # ------------------------------------------------------------------
-    block_w, block_h = 14.0, 7.6
-    top_y, bot_y = 46.0, 7.0
+    block_w = 14.0
+    block_h = 7.6 * YS
+    top_y   = 46.0 * YS
+    bot_y   = 7.0  * YS
 
     cols_top = [3.0, 18.0, 33.0, 48.0, 63.0, 78.0]
     cols_bot = [18.0, 33.0, 48.0, 63.0]
@@ -216,19 +228,19 @@ def main() -> int:
     # 1. Zone backplates (drawn first so everything sits on top).
     # ------------------------------------------------------------------
     # Zone 1 — Dynamics / Truth (top row, SPICE + Dynamics Propagation).
-    draw_zone(1.6, 43.6, 30.4, 13.4, CYAN,
+    draw_zone(1.6, 43.6 * YS, 30.4, 13.4 * YS, CYAN,
               "ZONE 1  ·  Dynamics / Truth", fill_alpha=0.06)
     # Zone 2 — Vision / Measurement generation (top row, cols 2–5).
     # Slightly desaturated/dimmer amber so it groups without dominating.
-    draw_zone(31.6, 43.6, 61.8, 13.4, AMBER,
+    draw_zone(31.6, 43.6 * YS, 61.8, 13.4 * YS, AMBER,
               "ZONE 2  ·  Vision / Measurement generation", fill_alpha=0.035)
     # Zone 3 — Estimation (Phase 7 bridge + IEKF + State Estimate).
     # Two panels so Zone 3 doesn't have to engulf Zone 4 horizontally.
-    draw_zone(30.6, 22.5, 38.8, 15.5, VIOLET,
+    draw_zone(30.6, 22.5 * YS, 38.8, 15.5 * YS, VIOLET,
               "ZONE 3  ·  Estimation", fill_alpha=0.055)
-    draw_zone(46.4, 4.8, 32.2, 13.4, VIOLET, None, fill_alpha=0.055)
+    draw_zone(46.4, 4.8 * YS, 32.2, 13.4 * YS, VIOLET, None, fill_alpha=0.055)
     # Zone 4 — Guidance / Correction (bottom row, Midcourse + Correction).
-    draw_zone(16.4, 4.8, 32.2, 13.4, RED,
+    draw_zone(16.4, 4.8 * YS, 32.2, 13.4 * YS, RED,
               "ZONE 4  ·  Guidance / Correction", fill_alpha=0.06)
 
     # ------------------------------------------------------------------
@@ -304,7 +316,8 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Centered vertically between top-row bottom (top_y) and bottom-row top
     # (bot_y + block_h). Centered horizontally on the pipeline midline.
-    bridge_w, bridge_h = 34.0, 9.6
+    bridge_w = 34.0
+    bridge_h = 9.6 * YS
     bridge_x = 50.0 - bridge_w / 2.0
     bridge_y = ((top_y) + (bot_y + block_h)) / 2.0 - bridge_h / 2.0
     b_point = draw_block(
@@ -321,8 +334,8 @@ def main() -> int:
         xs = [b[0] + b[2] / 2.0 for b in blocks]
         return sum(xs) / len(xs)
 
-    pill_y_top = top_y + block_h + 2.7
-    pill_y_bot = bot_y + block_h + 2.7
+    pill_y_top = top_y + block_h + 2.7 * YS
+    pill_y_bot = bot_y + block_h + 2.7 * YS
     # 00–01 : Ephemeris + Dynamics Propagation
     draw_phase_pill(group_center_x([b_spice, b_truth]), pill_y_top, "00–01", CYAN)
     # 04–05 : Camera Model + Target Detection + Pixel→Bearing
@@ -334,7 +347,7 @@ def main() -> int:
     # 02 : Midcourse Targeting + Apply Correction
     draw_phase_pill(group_center_x([b_corr, b_guid]), pill_y_bot, "02", RED)
     # 07 : Phase 7 hero (pill sits directly above the hero block).
-    draw_phase_pill(bridge_x + bridge_w / 2.0, bridge_y + bridge_h + 1.7, "07", VIOLET_HERO)
+    draw_phase_pill(bridge_x + bridge_w / 2.0, bridge_y + bridge_h + 1.7 * YS, "07", VIOLET_HERO)
 
     # ------------------------------------------------------------------
     # 6. Arrows — solid = main flow, dashed = feedback; main loop thicker.
@@ -377,29 +390,15 @@ def main() -> int:
     # "Closed-loop navigation" banner sits in the open band between the
     # Zone 4 header (above the bottom row) and the Zone 3 bridge panel.
     ax.text(
-        50.0, 20.8,
+        50.0, 20.8 * YS,
         "CLOSED-LOOP  NAVIGATION",
         color=TEXT, fontsize=11.5, fontweight="bold",
         ha="center", va="center", alpha=0.96, zorder=6,
     )
 
-    # ------------------------------------------------------------------
-    # 7. Title, subtitle, "You are here" note.
-    # ------------------------------------------------------------------
-    fig.suptitle(
-        "Cislunar Optical Navigation — Software Pipeline",
-        color=TEXT, fontsize=18, y=0.975, fontweight="bold",
-    )
-    fig.text(
-        0.5, 0.936,
-        "SPICE-backed IEKF with autonomous camera pointing (Phase 7)",
-        color=DIM, fontsize=11.5, ha="center",
-    )
-    fig.text(
-        0.5, 0.912,
-        "This talk focuses on Phases 02–07 · Phase 08 closes as a future-facing extension",
-        color=MUTED, fontsize=9.4, ha="center", style="italic", alpha=0.55,
-    )
+    # No figure-level title — the slide provides "Five zones. One loop. The
+    # filter points the camera." above the embedded image.  Keeping the
+    # title here would double up at this short aspect.
 
     # ------------------------------------------------------------------
     # 8. Legend strip (compact, standardized names).
@@ -412,8 +411,9 @@ def main() -> int:
         (GREEN,  "Control"),
     ]
     lx0 = 4.0
-    ly = 60.5
-    sw, sh = 1.3, 1.1
+    ly = 60.5 * YS
+    sw = 1.3
+    sh = 1.1 * YS
     gap = 13.0
     for i, (col, label) in enumerate(legend_entries):
         lx = lx0 + i * gap
@@ -428,8 +428,8 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 9. Bottom takeaway band — Without vs With Phase 7.
     # ------------------------------------------------------------------
-    band_y = 0.35
-    band_h = 3.0
+    band_y = 0.35 * YS
+    band_h = 3.0  * YS
     card_w = 46.0
     left_x, right_x = 2.5, 51.5
 
@@ -442,7 +442,7 @@ def main() -> int:
         ))
         # Accent bar on the left edge.
         ax.add_patch(FancyBboxPatch(
-            (x + 0.3, band_y + 0.3), 0.55, band_h - 0.6,
+            (x + 0.3, band_y + 0.3 * YS), 0.55, band_h - 0.6 * YS,
             boxstyle="round,pad=0.05,rounding_size=0.2",
             linewidth=0, edgecolor="none", facecolor=accent, alpha=0.9,
             zorder=7,
@@ -465,7 +465,7 @@ def main() -> int:
         "Estimated LOS repoints camera → target stays in FOV → updates persist → stable filter",
     )
 
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.895, bottom=0.025)
+    fig.subplots_adjust(left=0.015, right=0.985, top=0.985, bottom=0.015)
 
     out_path = repo_path(args.out_plot)
     out_path.parent.mkdir(parents=True, exist_ok=True)

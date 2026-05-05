@@ -30,7 +30,11 @@ from nav.ekf import ekf_propagate_cr3bp_stm, ekf_propagate_stm
 from nav.measurements.bearing import bearing_update_tangent
 from nav.measurements.pixel_bearing import pixel_detection_to_bearing
 from cv.camera import Intrinsics
-from cv.pointing import camera_dcm_from_boresight
+from cv.pointing import (
+    camera_dcm_from_boresight,
+    random_small_rotation_dcm,
+    small_rotation_dcm,
+)
 from cv.sim_measurements import simulate_pixel_measurement
 from guidance.targeting import solve_single_impulse_position_target
 
@@ -91,8 +95,16 @@ def run_case(
     *,
     camera_mode: CameraMode = "estimate_tracking",
     q_acc: float = 1e-14,
+    sigma_att_rad: float = 0.0,
+    bias_att_rad: Any = None,
+    pointing_lag_steps: int = 0,
+    meas_delay_steps: int = 0,
+    P0_scale: float = 1.0,
+    landmark_positions: Any = None,
+    disable_moon_center: bool = False,
     return_debug: bool = True,
     accumulate_gramian: bool = True,
+    P_cov_history: bool = False,
 ) -> Dict[str, Any]:
     camera_mode = _resolve_camera_mode(camera_mode)
 
@@ -103,6 +115,21 @@ def run_case(
     x0_nom = np.array([L1x - 1e-3, 0.0, 0.0, 0.0, 0.05, 0.0], dtype=float)
     x0_true = x0_nom + np.asarray(dx0, dtype=float).reshape(6)
     r_body  = np.array([1.0 - float(mu), 0.0, 0.0], dtype=float)
+
+    bias_vec = (
+        np.zeros(3, dtype=float)
+        if bias_att_rad is None
+        else np.asarray(bias_att_rad, dtype=float).reshape(3)
+    )
+    R_bias = small_rotation_dcm(bias_vec) if np.any(bias_vec != 0.0) else None
+
+    if landmark_positions is None:
+        lmk_arr = np.zeros((0, 3), dtype=float)
+    else:
+        lmk_arr = np.asarray(landmark_positions, dtype=float).reshape(-1, 3)
+
+    pointing_lag_steps = max(0, int(pointing_lag_steps))
+    meas_delay_steps   = max(0, int(meas_delay_steps))
 
     res_nom = propagate(model.eom, (float(t0), float(tf)), x0_nom,
                         t_eval=np.linspace(t0, tf, 2001), rtol=1e-11, atol=1e-13)
@@ -126,6 +153,7 @@ def run_case(
     # Position σ ~ 1e-3 DU, velocity σ ~ 1e-3.5 DU/TU (velocity uncertainty
     # is ~10× smaller than position in CR3BP dimensionless units).
     P     = np.diag([1e-6, 1e-6, 1e-6, 1e-7, 1e-7, 1e-7]).astype(float)
+    P    *= float(P0_scale)
     q_acc = float(q_acc)
 
     x_hat_hist:   list[np.ndarray] = []
@@ -134,6 +162,11 @@ def run_case(
     innov_2d_list: list[np.ndarray] = []
     pos_err_list:  list[float]     = []
     P_diag_list:  list[np.ndarray] = []
+    P_full_hist:  list[np.ndarray] = [] if P_cov_history else []
+    los_inertial_hist: list[np.ndarray] = []
+    range_truth_hist:  list[float]      = []
+    range_estimate_hist: list[float]    = []
+    x_hat_pre_buf: list[np.ndarray]     = []
     valid_arr     = np.zeros(k_tc + 1, dtype=bool)
 
     # Observability Gramian: W = Σ_k Φ(t_k,t_0)ᵀ Hₖᵀ Hₖ Φ(t_k,t_0)
@@ -151,42 +184,73 @@ def run_case(
         if accumulate_gramian:
             Phi_cum = Phi_step @ Phi_cum
 
-        r_sc_true = xs_true[k, :3]
-        if camera_mode == "fixed":
-            R_cam = R_fixed
-        elif camera_mode == "truth_tracking":
-            R_cam = camera_dcm_from_boresight(r_body - r_sc_true,
-                                              camera_forward_axis="+z")
-        else:
-            R_cam = camera_dcm_from_boresight(r_body - x_hat[:3],
-                                              camera_forward_axis="+z")
+        # Optional measurement-delay simulation: pretend the truth state
+        # used for measurement generation is from `meas_delay_steps` ago.
+        # The filter still timestamps the update at `t_meas[k]`.
+        k_meas = max(0, k - meas_delay_steps)
+        r_sc_true = xs_true[k_meas, :3]
 
-        meas = simulate_pixel_measurement(
-            r_sc=r_sc_true, r_body=r_body, intrinsics=intr,
-            R_cam_from_frame=R_cam, sigma_px=float(sigma_px),
-            rng=rng, t=float(t_meas[k]),
-            dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
-        )
-
-        if meas.valid and np.isfinite(meas.u_px):
-            u_g, sig_k = pixel_detection_to_bearing(
-                meas.u_px, meas.v_px, float(sigma_px), intr, R_cam.T
+        # Pointing-lag: the camera tracks an estimate from `pointing_lag_steps`
+        # steps in the past (k=current; lag=0 → use current x_hat).
+        x_hat_pre_buf.append(x_hat.copy())
+        if camera_mode == "estimate_tracking":
+            if pointing_lag_steps > 0 and len(x_hat_pre_buf) > pointing_lag_steps:
+                x_hat_for_pointing = x_hat_pre_buf[-1 - pointing_lag_steps]
+            else:
+                x_hat_for_pointing = x_hat
+            R_cam_cmd = camera_dcm_from_boresight(
+                r_body - x_hat_for_pointing[:3], camera_forward_axis="+z"
             )
-            if np.all(np.isfinite(u_g)):
-                upd = bearing_update_tangent(
-                    x_hat, P, u_g, r_body, float(sig_k)
+        elif camera_mode == "truth_tracking":
+            R_cam_cmd = camera_dcm_from_boresight(
+                r_body - r_sc_true, camera_forward_axis="+z"
+            )
+        else:  # fixed
+            R_cam_cmd = R_fixed
+
+        # Apply systematic pointing bias (constant, deterministic) plus
+        # random per-step attitude noise. Bias multiplies first, then
+        # noise — so noise is a small perturbation around the biased pose.
+        R_cam_actual = R_cam_cmd
+        if R_bias is not None:
+            R_cam_actual = R_bias @ R_cam_actual
+        if sigma_att_rad > 0.0:
+            R_perturb = random_small_rotation_dcm(rng, float(sigma_att_rad))
+            R_cam_actual = R_perturb @ R_cam_actual
+
+        if not disable_moon_center:
+            meas = simulate_pixel_measurement(
+                r_sc=r_sc_true, r_body=r_body, intrinsics=intr,
+                R_cam_from_frame=R_cam_actual, sigma_px=float(sigma_px),
+                rng=rng, t=float(t_meas[k]),
+                dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
+            )
+
+            # The filter back-projects the pixel through the *commanded* DCM
+            # so attitude error / bias / lag flow through as un-modeled
+            # measurement error.
+            if meas.valid and np.isfinite(meas.u_px):
+                u_g, sig_k = pixel_detection_to_bearing(
+                    meas.u_px, meas.v_px, float(sigma_px), intr, R_cam_cmd.T
                 )
-                if upd.accepted:
-                    x_hat, P = upd.x_upd, upd.P_upd
-                    if accumulate_gramian:
-                        W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
-                nis_list.append(float(upd.nis))
-                innov_2d_list.append(
-                    upd.final_innovation.copy()
-                    if upd.final_innovation is not None
-                    else upd.innovation.copy()
-                )
-                valid_arr[k] = True
+                if np.all(np.isfinite(u_g)):
+                    upd = bearing_update_tangent(
+                        x_hat, P, u_g, r_body, float(sig_k)
+                    )
+                    if upd.accepted:
+                        x_hat, P = upd.x_upd, upd.P_upd
+                        if accumulate_gramian:
+                            W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
+                    nis_list.append(float(upd.nis))
+                    innov_2d_list.append(
+                        upd.final_innovation.copy()
+                        if upd.final_innovation is not None
+                        else upd.innovation.copy()
+                    )
+                    valid_arr[k] = True
+                else:
+                    nis_list.append(float("nan"))
+                    innov_2d_list.append(np.full(2, np.nan))
             else:
                 nis_list.append(float("nan"))
                 innov_2d_list.append(np.full(2, np.nan))
@@ -194,8 +258,31 @@ def run_case(
             nis_list.append(float("nan"))
             innov_2d_list.append(np.full(2, np.nan))
 
+        # Optional landmark updates. Treat each landmark as an inertial
+        # point near r_body; generate a separate bearing measurement and
+        # update the filter scalarly. Same R_cam_actual is used so the
+        # bearing inherits the same attitude error.
+        for lmk_pos in lmk_arr:
+            lm_meas = simulate_pixel_measurement(
+                r_sc=r_sc_true, r_body=lmk_pos, intrinsics=intr,
+                R_cam_from_frame=R_cam_actual, sigma_px=float(sigma_px),
+                rng=rng, t=float(t_meas[k]),
+                dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
+            )
+            if not (lm_meas.valid and np.isfinite(lm_meas.u_px)):
+                continue
+            u_l, sig_l = pixel_detection_to_bearing(
+                lm_meas.u_px, lm_meas.v_px, float(sigma_px), intr, R_cam_cmd.T
+            )
+            if not np.all(np.isfinite(u_l)):
+                continue
+            upd_l = bearing_update_tangent(x_hat, P, u_l, lmk_pos, float(sig_l))
+            if upd_l.accepted:
+                x_hat, P = upd_l.x_upd, upd_l.P_upd
+
         # NEES: (x̂ − x_true)ᵀ P⁻¹ (x̂ − x_true), chi²(6) distributed for a
-        # consistent filter.
+        # consistent filter. Use truth at k (not k_meas) so the consistency
+        # check is against the actual current state.
         err6 = x_hat - xs_true[k]
         try:
             nees_val = float(err6 @ np.linalg.solve(P, err6))
@@ -206,6 +293,19 @@ def run_case(
         x_hat_hist.append(x_hat.copy())
         pos_err_list.append(_norm(x_hat[:3] - xs_true[k, :3]))
         P_diag_list.append(np.diag(P).copy())
+        if P_cov_history:
+            P_full_hist.append(P.copy())
+        # Parallax / range telemetry: LOS in inertial frame (toward Moon),
+        # truth range, estimated range.
+        rho_truth = r_body - xs_true[k, :3]
+        rho_est   = r_body - x_hat[:3]
+        n_truth = float(np.linalg.norm(rho_truth))
+        n_est   = float(np.linalg.norm(rho_est))
+        los_inertial_hist.append(
+            (rho_truth / n_truth) if n_truth > 1e-12 else np.full(3, np.nan)
+        )
+        range_truth_hist.append(n_truth)
+        range_estimate_hist.append(n_est)
         if accumulate_gramian:
             gramian_eig_hist.append(np.linalg.eigvalsh(W_obs).copy())
 
@@ -257,12 +357,30 @@ def run_case(
     # prevent confusion with the fractional dv_inflation_pct ratio metric.
     dv_mag_bias    = dv_ekf_mag - dv_perfect_mag
 
+    # Parallax: total angular sweep of LOS-to-Moon between t0 and tc.
+    los_inertial_arr = np.asarray(los_inertial_hist)
+    if los_inertial_arr.size and np.all(np.isfinite(los_inertial_arr[0])) \
+        and np.all(np.isfinite(los_inertial_arr[-1])):
+        cos_total = float(np.clip(
+            np.dot(los_inertial_arr[0], los_inertial_arr[-1]), -1.0, 1.0
+        ))
+        parallax_total_rad = float(np.arccos(cos_total))
+    else:
+        parallax_total_rad = float("nan")
+    range_err_tc = float(abs(range_estimate_hist[-1] - range_truth_hist[-1])) \
+        if range_truth_hist else float("nan")
+
     out: Dict[str, Any] = {
         "tc":           tc_eff,
         "sigma_px":     float(sigma_px),
         "dropout_prob": float(dropout_prob),
         "camera_mode":  camera_mode,
         "q_acc":        q_acc,
+        "sigma_att_rad": float(sigma_att_rad),
+        "P0_scale":      float(P0_scale),
+        "n_landmarks":   int(lmk_arr.shape[0]),
+        "pointing_lag_steps": int(pointing_lag_steps),
+        "meas_delay_steps":   int(meas_delay_steps),
         "dv_perfect_mag":   dv_perfect_mag,
         "dv_ekf_mag":       dv_ekf_mag,
         "dv_delta_mag":     dv_delta_mag,
@@ -279,6 +397,8 @@ def run_case(
         "valid_rate":       valid_rate,
         "nis_mean":         nis_mean,
         "nees_mean":        nees_mean,
+        "parallax_total_rad": parallax_total_rad,
+        "range_err_tc":       range_err_tc,
     }
     if not return_debug:
         return out
@@ -290,6 +410,11 @@ def run_case(
     gramian_eig_arr = (
         np.asarray(gramian_eig_hist) if accumulate_gramian else np.empty((0, 6))
     )
+    P_full_arr = (
+        np.asarray(P_full_hist) if P_cov_history else np.empty((0, 6, 6))
+    )
+    range_truth_arr    = np.asarray(range_truth_hist)
+    range_estimate_arr = np.asarray(range_estimate_hist)
 
     out["debug"] = {
             "t_meas":        t_meas,
@@ -299,11 +424,16 @@ def run_case(
             "x_hat_hist":    x_hat_arr,
             "pos_err_hist":  pos_err_arr,
             "P_diag_hist":   P_diag_arr,
+            "P_full_hist":   P_full_arr,
+            "P_tc":          P.copy(),
             "nis_hist":      nis_arr,
             "nees_hist":     nees_arr,
             "innov_2d_hist":    innov_2d_arr,
             "W_obs":            W_obs,
             "gramian_eig_hist": gramian_eig_arr,
+            "los_inertial_hist": los_inertial_arr,
+            "range_truth_hist":    range_truth_arr,
+            "range_estimate_hist": range_estimate_arr,
             "xs_unc_tf":    res_unc.x,
             "xs_perf_tf":   res_perf.x,
             "xs_ekf_tf":    res_ekf.x,
@@ -331,8 +461,16 @@ def run_case_spice(
     camera_mode: CameraMode = "estimate_tracking",
     targets: tuple = ("SUN", "EARTH", "MOON"),
     q_acc_nd: float = 1e-14,
+    sigma_att_rad: float = 0.0,
+    bias_att_rad: Any = None,
+    pointing_lag_steps: int = 0,
+    meas_delay_steps: int = 0,
+    P0_scale: float = 1.0,
+    landmark_offsets_km: Any = None,
+    disable_moon_center: bool = False,
     return_debug: bool = True,
     accumulate_gramian: bool = True,
+    P_cov_history: bool = False,
 ) -> Dict[str, Any]:
     """High-fidelity SPICE/JPL-ephemeris variant of run_case.
 
@@ -358,6 +496,21 @@ def run_case_spice(
 
     camera_mode = _resolve_camera_mode(camera_mode)
     rng = np.random.default_rng(int(seed))
+
+    bias_vec = (
+        np.zeros(3, dtype=float)
+        if bias_att_rad is None
+        else np.asarray(bias_att_rad, dtype=float).reshape(3)
+    )
+    R_bias = small_rotation_dcm(bias_vec) if np.any(bias_vec != 0.0) else None
+
+    if landmark_offsets_km is None:
+        lmk_offsets_km = np.zeros((0, 3), dtype=float)
+    else:
+        lmk_offsets_km = np.asarray(landmark_offsets_km, dtype=float).reshape(-1, 3)
+
+    pointing_lag_steps = max(0, int(pointing_lag_steps))
+    meas_delay_steps   = max(0, int(meas_delay_steps))
 
     if kernels is None:
         kernels = _DEFAULT_KERNELS
@@ -414,8 +567,12 @@ def run_case_spice(
         x0_true = x0_nom + dx0_km
 
         # ── Measurement time grid ────────────────────────────────────────────
+        # np.arange can drift slightly past tf_s for long arcs (the last
+        # multiple of dtm_s falls just above tf_s due to FP accumulation,
+        # and `+1e-6` lets it through). Clamp to t_span for solve_ivp.
         t_meas_s = np.arange(t0_s, tf_s + 1e-6, dtm_s)
-        if t_meas_s[-1] < tf_s - dtm_s * 1e-3:
+        t_meas_s = t_meas_s[t_meas_s <= tf_s]
+        if t_meas_s.size == 0 or t_meas_s[-1] < tf_s - dtm_s * 1e-3:
             t_meas_s = np.append(t_meas_s, tf_s)
 
         # ── Nominal propagation → r_target (J2000 km) ────────────────────────
@@ -449,6 +606,7 @@ def run_case_spice(
             1e-6 * lsq, 1e-6 * lsq, 1e-6 * lsq,
             1e-7 * vsq, 1e-7 * vsq, 1e-7 * vsq,
         ]).astype(float)
+        P    *= float(P0_scale)
         # Process-noise density in km²/s³ (proportionally converted from ND q_acc_nd)
         q_acc = float(q_acc_nd) * lsq / tunit_s ** 3
 
@@ -459,6 +617,11 @@ def run_case_spice(
         innov_2d_list: list[np.ndarray] = []
         pos_err_list:  list[float]      = []
         P_diag_list:   list[np.ndarray] = []
+        P_full_hist:   list[np.ndarray] = []
+        x_hat_pre_buf: list[np.ndarray] = []
+        los_inertial_hist: list[np.ndarray] = []
+        range_truth_hist:    list[float] = []
+        range_estimate_hist: list[float] = []
         valid_arr      = np.zeros(k_tc + 1, dtype=bool)
         Phi_cum        = np.eye(6, dtype=float) if accumulate_gramian else None
         W_obs          = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
@@ -477,47 +640,87 @@ def run_case_spice(
             # Moon J2000 position at this measurement step (km)
             t_k    = float(t_meas_s[k])
             r_body = ephemeris.position_km("MOON", t_k)
-            r_sc_true = xs_true[k, :3]
+            k_meas = max(0, k - meas_delay_steps)
+            r_sc_true = xs_true[k_meas, :3]
 
-            if camera_mode == "fixed":
-                R_cam = R_fixed
-            elif camera_mode == "truth_tracking":
-                R_cam = camera_dcm_from_boresight(r_body - r_sc_true,
-                                                  camera_forward_axis="+z")
-            else:
-                R_cam = camera_dcm_from_boresight(r_body - x_hat[:3],
-                                                  camera_forward_axis="+z")
-
-            meas = simulate_pixel_measurement(
-                r_sc=r_sc_true, r_body=r_body, intrinsics=intr,
-                R_cam_from_frame=R_cam, sigma_px=float(sigma_px),
-                rng=rng, t=t_k,
-                dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
-            )
-
-            if meas.valid and np.isfinite(meas.u_px):
-                u_g, sig_k = pixel_detection_to_bearing(
-                    meas.u_px, meas.v_px, float(sigma_px), intr, R_cam.T
+            x_hat_pre_buf.append(x_hat.copy())
+            if camera_mode == "estimate_tracking":
+                if pointing_lag_steps > 0 and len(x_hat_pre_buf) > pointing_lag_steps:
+                    x_hat_for_pointing = x_hat_pre_buf[-1 - pointing_lag_steps]
+                else:
+                    x_hat_for_pointing = x_hat
+                R_cam_cmd = camera_dcm_from_boresight(
+                    r_body - x_hat_for_pointing[:3], camera_forward_axis="+z"
                 )
-                if np.all(np.isfinite(u_g)):
-                    upd = bearing_update_tangent(x_hat, P, u_g, r_body, float(sig_k))
-                    if upd.accepted:
-                        x_hat, P = upd.x_upd, upd.P_upd
-                        if accumulate_gramian:
-                            W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
-                    nis_list.append(float(upd.nis))
-                    innov_2d_list.append(
-                        upd.final_innovation.copy()
-                        if upd.final_innovation is not None
-                        else upd.innovation.copy()
+            elif camera_mode == "truth_tracking":
+                R_cam_cmd = camera_dcm_from_boresight(
+                    r_body - r_sc_true, camera_forward_axis="+z"
+                )
+            else:
+                R_cam_cmd = R_fixed
+
+            R_cam_actual = R_cam_cmd
+            if R_bias is not None:
+                R_cam_actual = R_bias @ R_cam_actual
+            if sigma_att_rad > 0.0:
+                R_perturb = random_small_rotation_dcm(rng, float(sigma_att_rad))
+                R_cam_actual = R_perturb @ R_cam_actual
+
+            if not disable_moon_center:
+                meas = simulate_pixel_measurement(
+                    r_sc=r_sc_true, r_body=r_body, intrinsics=intr,
+                    R_cam_from_frame=R_cam_actual, sigma_px=float(sigma_px),
+                    rng=rng, t=t_k,
+                    dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
+                )
+
+                if meas.valid and np.isfinite(meas.u_px):
+                    u_g, sig_k = pixel_detection_to_bearing(
+                        meas.u_px, meas.v_px, float(sigma_px), intr, R_cam_cmd.T
                     )
-                    valid_arr[k] = True
+                    if np.all(np.isfinite(u_g)):
+                        upd = bearing_update_tangent(x_hat, P, u_g, r_body, float(sig_k))
+                        if upd.accepted:
+                            x_hat, P = upd.x_upd, upd.P_upd
+                            if accumulate_gramian:
+                                W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
+                        nis_list.append(float(upd.nis))
+                        innov_2d_list.append(
+                            upd.final_innovation.copy()
+                            if upd.final_innovation is not None
+                            else upd.innovation.copy()
+                        )
+                        valid_arr[k] = True
+                    else:
+                        nis_list.append(float("nan"))
+                        innov_2d_list.append(np.full(2, np.nan))
                 else:
                     nis_list.append(float("nan"))
                     innov_2d_list.append(np.full(2, np.nan))
             else:
                 nis_list.append(float("nan"))
                 innov_2d_list.append(np.full(2, np.nan))
+
+            # Landmarks: each Moon-fixed offset is added to the current
+            # Moon ephemeris position to give an inertial landmark.
+            for off_km in lmk_offsets_km:
+                lmk_pos = r_body + off_km
+                lm_meas = simulate_pixel_measurement(
+                    r_sc=r_sc_true, r_body=lmk_pos, intrinsics=intr,
+                    R_cam_from_frame=R_cam_actual, sigma_px=float(sigma_px),
+                    rng=rng, t=t_k,
+                    dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
+                )
+                if not (lm_meas.valid and np.isfinite(lm_meas.u_px)):
+                    continue
+                u_l, sig_l = pixel_detection_to_bearing(
+                    lm_meas.u_px, lm_meas.v_px, float(sigma_px), intr, R_cam_cmd.T
+                )
+                if not np.all(np.isfinite(u_l)):
+                    continue
+                upd_l = bearing_update_tangent(x_hat, P, u_l, lmk_pos, float(sig_l))
+                if upd_l.accepted:
+                    x_hat, P = upd_l.x_upd, upd_l.P_upd
 
             err6 = x_hat - xs_true[k]
             try:
@@ -529,6 +732,17 @@ def run_case_spice(
             x_hat_hist.append(x_hat.copy())
             pos_err_list.append(_norm(x_hat[:3] - xs_true[k, :3]))
             P_diag_list.append(np.diag(P).copy())
+            if P_cov_history:
+                P_full_hist.append(P.copy())
+            rho_truth = r_body - xs_true[k, :3]
+            rho_est   = r_body - x_hat[:3]
+            n_truth = float(np.linalg.norm(rho_truth))
+            n_est   = float(np.linalg.norm(rho_est))
+            los_inertial_hist.append(
+                (rho_truth / n_truth) if n_truth > 1e-12 else np.full(3, np.nan)
+            )
+            range_truth_hist.append(n_truth)
+            range_estimate_hist.append(n_est)
             if accumulate_gramian:
                 gramian_eig_hist.append(np.linalg.eigvalsh(W_obs).copy())
 
@@ -579,12 +793,29 @@ def run_case_spice(
         dv_delta_mag   = _norm(dv_ekf - dv_perf)
         dv_mag_bias    = dv_ekf_mag - dv_perfect_mag
 
+        los_inertial_arr = np.asarray(los_inertial_hist)
+        if los_inertial_arr.size and np.all(np.isfinite(los_inertial_arr[0])) \
+            and np.all(np.isfinite(los_inertial_arr[-1])):
+            cos_total = float(np.clip(
+                np.dot(los_inertial_arr[0], los_inertial_arr[-1]), -1.0, 1.0
+            ))
+            parallax_total_rad = float(np.arccos(cos_total))
+        else:
+            parallax_total_rad = float("nan")
+        range_err_tc = float(abs(range_estimate_hist[-1] - range_truth_hist[-1])) \
+            if range_truth_hist else float("nan")
+
         out: Dict[str, Any] = {
             "tc":             tc_eff,
             "sigma_px":       float(sigma_px),
             "dropout_prob":   float(dropout_prob),
             "camera_mode":    camera_mode,
             "q_acc_nd":       float(q_acc_nd),
+            "sigma_att_rad":  float(sigma_att_rad),
+            "P0_scale":       float(P0_scale),
+            "n_landmarks":    int(lmk_offsets_km.shape[0]),
+            "pointing_lag_steps": int(pointing_lag_steps),
+            "meas_delay_steps":   int(meas_delay_steps),
             "units":          "km/km_s",
             "lunit_km":       lunit_km,
             "tunit_s":        tunit_s,
@@ -604,6 +835,8 @@ def run_case_spice(
             "valid_rate":       valid_rate,
             "nis_mean":         nis_mean,
             "nees_mean":        nees_mean,
+            "parallax_total_rad": parallax_total_rad,
+            "range_err_tc":       range_err_tc,
         }
         if not return_debug:
             return out
@@ -615,6 +848,11 @@ def run_case_spice(
         gramian_eig_arr = (
             np.asarray(gramian_eig_hist) if accumulate_gramian else np.empty((0, 6))
         )
+        P_full_arr = (
+            np.asarray(P_full_hist) if P_cov_history else np.empty((0, 6, 6))
+        )
+        range_truth_arr    = np.asarray(range_truth_hist)
+        range_estimate_arr = np.asarray(range_estimate_hist)
 
         out["debug"] = {
                 "t_meas":           t_meas_s,
@@ -624,11 +862,16 @@ def run_case_spice(
                 "x_hat_hist":       x_hat_arr,
                 "pos_err_hist":     pos_err_arr,
                 "P_diag_hist":      P_diag_arr,
+                "P_full_hist":      P_full_arr,
+                "P_tc":             P.copy(),
                 "nis_hist":         nis_arr,
                 "nees_hist":        nees_arr,
                 "innov_2d_hist":    innov_2d_arr,
                 "W_obs":            W_obs,
                 "gramian_eig_hist": gramian_eig_arr,
+                "los_inertial_hist":   los_inertial_arr,
+                "range_truth_hist":    range_truth_arr,
+                "range_estimate_hist": range_estimate_arr,
                 "xs_unc_tf":        res_unc.x,
                 "xs_perf_tf":       res_perf.x,
                 "xs_ekf_tf":        res_ekf.x,

@@ -96,6 +96,10 @@ def run_monte_carlo(
             est_err=est_err,
             camera_mode=config.camera_mode,
             q_acc=float(getattr(config, "q_acc", 1e-14)),
+            sigma_att_rad=float(getattr(config, "sigma_att_rad", 0.0)),
+            pointing_lag_steps=int(getattr(config, "pointing_lag_steps", 0)),
+            meas_delay_steps=int(getattr(config, "meas_delay_steps", 0)),
+            P0_scale=float(getattr(config, "P0_scale", 1.0)),
             return_debug=False,
             accumulate_gramian=False,
         )
