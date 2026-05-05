@@ -41,56 +41,35 @@ _KM_PER_LU = 384_400.0
 
 
 def _run_perturbation(
-    *, run_case, kind: str, value: float, n_seeds: int,
-    base_seed: int, config_kwargs: dict,
+    *, truth: str, kind: str, value: float, n_seeds: int,
+    base_seed: int, config_kwargs: dict, n_workers: int,
 ) -> list[dict]:
-    from mc.sampler import (
-        make_trial_rng,
-        sample_estimation_error,
-        sample_injection_error,
+    from _parallel_seeds import run_seeds_parallel
+
+    kw: dict = {}
+    if kind == "bias_deg":
+        theta = float(value) * np.pi / 180.0
+        kw["bias_att_rad"] = (0.0, theta, 0.0)
+    elif kind == "lag_steps":
+        kw["pointing_lag_steps"] = int(value)
+    elif kind == "att_noise_deg":
+        kw["sigma_att_rad"] = float(value) * np.pi / 180.0
+    else:
+        raise ValueError(f"Unknown perturbation kind: {kind}")
+
+    return run_seeds_parallel(
+        truth=truth, n_seeds=int(n_seeds), base_seed=int(base_seed),
+        n_workers=int(n_workers),
+        kwargs_extra={**config_kwargs, **kw},
+        extract_fields=[
+            ("miss_ekf",   "miss_ekf"),
+            ("pos_err_tc", "pos_err_tc"),
+            ("nis_mean",   "nis_mean"),
+            ("nees_mean",  "nees_mean"),
+            ("valid_rate", "valid_rate"),
+        ],
+        extra_row_fields={"kind": kind, "value": float(value)},
     )
-
-    rows: list[dict] = []
-    for trial_id in range(int(n_seeds)):
-        rng = make_trial_rng(base_seed, trial_id)
-        seed = int(rng.integers(0, 2**31 - 1))
-        dx0 = sample_injection_error(rng, sigma_r=1e-4, sigma_v=1e-4,
-                                     planar_only=False)
-        est_err = sample_estimation_error(rng, sigma_r=1e-4, sigma_v=1e-4,
-                                          planar_only=False)
-        kwargs = {}
-        if kind == "bias_deg":
-            # Apply bias around the camera y-axis (perpendicular to
-            # boresight) so the LOS gets shifted in image-plane v.
-            theta = float(value) * np.pi / 180.0
-            kwargs["bias_att_rad"] = np.array([0.0, theta, 0.0])
-        elif kind == "lag_steps":
-            kwargs["pointing_lag_steps"] = int(value)
-        elif kind == "att_noise_deg":
-            kwargs["sigma_att_rad"] = float(value) * np.pi / 180.0
-        else:
-            raise ValueError(f"Unknown perturbation kind: {kind}")
-
-        try:
-            out = run_case(
-                seed=seed, dx0=dx0, est_err=est_err,
-                return_debug=False, accumulate_gramian=False,
-                **{**config_kwargs, **kwargs},
-            )
-            rows.append({
-                "trial_id":   trial_id,
-                "seed":       seed,
-                "kind":       kind,
-                "value":      float(value),
-                "miss_ekf":   float(out["miss_ekf"]),
-                "pos_err_tc": float(out["pos_err_tc"]),
-                "nis_mean":   float(out["nis_mean"]),
-                "nees_mean":  float(out["nees_mean"]),
-                "valid_rate": float(out["valid_rate"]),
-            })
-        except Exception as exc:  # noqa: BLE001
-            print(f"  {kind}={value} trial={trial_id} failed: {exc}")
-    return rows
 
 
 def _violin_panel(
@@ -263,6 +242,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--q-acc", type=float, default=1e-14)
     p.add_argument("--out", type=str, default="results/mc/pointing_bias_lag")
     p.add_argument("--base-seed", type=int, default=7)
+    p.add_argument("--n-workers", type=int, default=-1,
+                   help="Process-pool size; -1 = cpu_count(); 1 = serial.")
     add_truth_arg(p)
     return p.parse_args()
 
@@ -270,7 +251,6 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     apply_dark_theme()
-    run_case = load_midcourse_run_case(truth=args.truth)
     units = RunUnits.for_truth(args.truth)
 
     config_kwargs = dict(
@@ -281,20 +261,20 @@ def main() -> None:
 
     bias_rows_by_value: dict[float, list[dict]] = {}
     for bias in args.bias_deg_list:
-        print(f"\n▸ BIAS sweep — bias = {bias:.3f} deg")
+        print(f"\n▸ BIAS sweep — bias = {bias:.3f} deg  workers={args.n_workers}")
         bias_rows_by_value[float(bias)] = _run_perturbation(
-            run_case=run_case, kind="bias_deg", value=float(bias),
+            truth=str(args.truth), kind="bias_deg", value=float(bias),
             n_seeds=int(args.n_seeds), base_seed=int(args.base_seed),
-            config_kwargs=config_kwargs,
+            config_kwargs=config_kwargs, n_workers=int(args.n_workers),
         )
 
     lag_rows_by_value: dict[float, list[dict]] = {}
     for lag in args.lag_steps_list:
-        print(f"\n▸ LAG sweep — lag = {lag} steps")
+        print(f"\n▸ LAG sweep — lag = {lag} steps  workers={args.n_workers}")
         lag_rows_by_value[float(lag)] = _run_perturbation(
-            run_case=run_case, kind="lag_steps", value=float(lag),
+            truth=str(args.truth), kind="lag_steps", value=float(lag),
             n_seeds=int(args.n_seeds), base_seed=int(args.base_seed),
-            config_kwargs=config_kwargs,
+            config_kwargs=config_kwargs, n_workers=int(args.n_workers),
         )
 
     out_dir = apply_truth_suffix(repo_path(args.out), args.truth)

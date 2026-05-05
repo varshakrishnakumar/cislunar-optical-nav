@@ -7,9 +7,48 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional
 
+import numpy as np
+
 from .metrics import trial_result_from_run_case
 from .sampler import make_trial_rng, sample_estimation_error, sample_injection_error
 from .types import MonteCarloConfig, TrialResult
+
+
+_KM_PER_LU       = 384_400.0
+_MOON_RADIUS_KM  = 1737.4
+_MOON_RADIUS_ND  = _MOON_RADIUS_KM / _KM_PER_LU
+
+
+def _landmark_offsets_for_case(case: str) -> Optional[np.ndarray]:
+    """Return Moon-fixed offsets (in CR3BP-ND or km — caller scales)
+    for a named landmark case, or ``None`` if the case is "none".
+    Each row is a unit-radius offset; multiply by the lunar radius in
+    your unit system to get the actual landmark position relative to
+    Moon center."""
+    if case == "none" or not case:
+        return None
+    if case == "synthetic_6":
+        return np.array([
+            [+1, 0, 0], [-1, 0, 0],
+            [0, +1, 0], [0, -1, 0],
+            [0, 0, +1], [0, 0, -1],
+        ], dtype=float)
+    if case == "synthetic_12":
+        # Six axes plus six edge-midpoint mixes.
+        d = 1.0 / np.sqrt(2.0)
+        return np.array([
+            [+1, 0, 0], [-1, 0, 0],
+            [0, +1, 0], [0, -1, 0],
+            [0, 0, +1], [0, 0, -1],
+            [+d, +d, 0], [-d, +d, 0], [+d, -d, 0], [-d, -d, 0],
+            [+d, 0, +d], [0, +d, -d],
+        ], dtype=float)
+    if case in ("catalog_craters_6", "catalog_craters_12"):
+        # Lat/lon-converted nearside crater catalog. Identity is
+        # assumed known; image recognition / matching is not modeled.
+        from cv.landmark_catalog import catalog_unit_offsets
+        return catalog_unit_offsets(case)
+    raise ValueError(f"Unknown landmark_case: {case!r}")
 
 
 CaseFn = Callable[..., Dict[str, Any]]
@@ -100,9 +139,36 @@ def run_monte_carlo(
             pointing_lag_steps=int(getattr(config, "pointing_lag_steps", 0)),
             meas_delay_steps=int(getattr(config, "meas_delay_steps", 0)),
             P0_scale=float(getattr(config, "P0_scale", 1.0)),
+            disable_moon_center=bool(getattr(config, "disable_moon_center", False)),
             return_debug=False,
             accumulate_gramian=False,
         )
+
+        bias = getattr(config, "bias_att_rad", None)
+        if bias is not None:
+            all_kwargs["bias_att_rad"] = np.asarray(bias, dtype=float)
+
+        # Landmark case → positions array. CR3BP `run_case` accepts
+        # ``landmark_positions`` (absolute, in ND); SPICE
+        # ``run_case_spice`` accepts ``landmark_offsets_km`` (relative
+        # to current Moon ephemeris position, in km). The dispatcher
+        # detects which kwarg the case_fn supports and feeds the right
+        # one — using the unit appropriate to the truth model.
+        case_name = getattr(config, "landmark_case", "none")
+        unit_offsets = _landmark_offsets_for_case(case_name)
+        if unit_offsets is not None:
+            sig_params = set(inspect.signature(case_fn).parameters)
+            if "landmark_offsets_km" in sig_params:
+                all_kwargs["landmark_offsets_km"] = (
+                    unit_offsets * float(_MOON_RADIUS_KM)
+                )
+            elif "landmark_positions" in sig_params:
+                moon_nd = np.array(
+                    [1.0 - float(config.mu), 0.0, 0.0], dtype=float
+                )
+                all_kwargs["landmark_positions"] = (
+                    moon_nd[None, :] + unit_offsets * float(_MOON_RADIUS_ND)
+                )
 
         if accepted_keys is None:
             kwargs = _filter_kwargs(case_fn, all_kwargs)   # may warn once

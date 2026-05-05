@@ -114,6 +114,15 @@ def _build_config(args: argparse.Namespace) -> Any:
         preset["meas_delay_steps"] = int(args.meas_delay_steps)
     if args.P0_scale is not None:
         preset["P0_scale"] = float(args.P0_scale)
+    if args.bias_att_deg_y is not None:
+        # Bias is applied around camera y-axis (perpendicular to
+        # boresight) so the LOS gets shifted in image-plane v.
+        b = float(args.bias_att_deg_y) * np.pi / 180.0
+        preset["bias_att_rad"] = (0.0, b, 0.0)
+    if args.landmark_case is not None:
+        preset["landmark_case"] = str(args.landmark_case)
+    if args.disable_moon_center:
+        preset["disable_moon_center"] = True
 
     import dataclasses
     valid_fields = {f.name for f in dataclasses.fields(MonteCarloConfig)}
@@ -460,6 +469,19 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--P0-scale",     type=float, default=None,
                    help="Multiplier on the diagonal of the initial filter "
                         "covariance (1.0 = baseline).")
+    p.add_argument("--bias-att-deg-y", type=float, default=None,
+                   help="Constant pointing bias around camera y-axis "
+                        "(deg). Composes with the commanded DCM each step.")
+    p.add_argument("--landmark-case",  type=str, default=None,
+                   choices=("none", "synthetic_6", "synthetic_12",
+                            "catalog_craters_6", "catalog_craters_12"),
+                   help="Landmark case. 'none' (default) is Moon-center "
+                        "only. 'synthetic_*' uses geometric ±-axis offsets; "
+                        "'catalog_craters_*' uses real lunar-crater "
+                        "lat/lon coordinates with identity assumed known.")
+    p.add_argument("--disable-moon-center", action="store_true",
+                   help="Skip Moon-center bearing updates entirely (use "
+                        "with --landmark-case for a landmarks-only study).")
     p.add_argument("--n-workers",    type=int,   default=-1,
                    help="MC worker pool size. -1 = cpu_count(); 1 = sequential. "
                         "Critical for SPICE truth: n=1000 single-threaded ≈ 3 hours.")

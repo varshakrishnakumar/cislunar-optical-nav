@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional, Sequence
+from typing import Literal, Optional, Sequence, Tuple
 
 
 CameraMode = Literal["fixed", "truth_tracking", "estimate_tracking"]
 
 _VALID_CAMERA_MODES = ("fixed", "truth_tracking", "estimate_tracking")
+
+LandmarkCase = Literal[
+    "none",
+    "synthetic_6", "synthetic_12",
+    "catalog_craters_6", "catalog_craters_12",
+]
+_VALID_LANDMARK_CASES = (
+    "none",
+    "synthetic_6", "synthetic_12",
+    "catalog_craters_6", "catalog_craters_12",
+)
 
 
 @dataclass(frozen=True)
@@ -38,9 +49,14 @@ class MonteCarloConfig:
 
     # Realism knobs (all default-off so existing studies are unchanged):
     sigma_att_rad: float = 0.0
+    bias_att_rad: Optional[Tuple[float, float, float]] = None
     pointing_lag_steps: int = 0
     meas_delay_steps: int = 0
     P0_scale: float = 1.0
+    # Named landmark case keeps CSV metadata clean — the runner
+    # materializes positions from the case name in run_monte_carlo.
+    landmark_case: LandmarkCase = "none"
+    disable_moon_center: bool = False
 
     def __post_init__(self) -> None:
         if not (0.0 < self.mu < 0.5):
@@ -80,6 +96,15 @@ class MonteCarloConfig:
             )
         if self.P0_scale <= 0.0:
             raise ValueError(f"P0_scale must be > 0, got {self.P0_scale}")
+        if self.landmark_case not in _VALID_LANDMARK_CASES:
+            raise ValueError(
+                f"landmark_case must be one of {_VALID_LANDMARK_CASES}, "
+                f"got {self.landmark_case!r}"
+            )
+        if self.bias_att_rad is not None and len(self.bias_att_rad) != 3:
+            raise ValueError(
+                f"bias_att_rad must be length-3 or None, got {self.bias_att_rad}"
+            )
 
 
 @dataclass(frozen=True)

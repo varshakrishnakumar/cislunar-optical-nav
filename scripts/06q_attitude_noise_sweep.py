@@ -35,43 +35,25 @@ _KM_PER_LU = 384_400.0
 
 
 def _run_one(
-    *, run_case, sigma_deg: float, n_seeds: int, base_seed: int,
-    config_kwargs: dict,
+    *, truth: str, sigma_deg: float, n_seeds: int, base_seed: int,
+    config_kwargs: dict, n_workers: int,
 ) -> list[dict]:
-    from mc.sampler import (
-        make_trial_rng,
-        sample_estimation_error,
-        sample_injection_error,
-    )
-
-    rows: list[dict] = []
+    from _parallel_seeds import run_seeds_parallel
     sigma_rad = float(sigma_deg) * np.pi / 180.0
-    for trial_id in range(int(n_seeds)):
-        rng = make_trial_rng(base_seed, trial_id)
-        seed = int(rng.integers(0, 2**31 - 1))
-        dx0 = sample_injection_error(rng, sigma_r=1e-4, sigma_v=1e-4,
-                                     planar_only=False)
-        est_err = sample_estimation_error(rng, sigma_r=1e-4, sigma_v=1e-4,
-                                          planar_only=False)
-        try:
-            out = run_case(
-                seed=seed, dx0=dx0, est_err=est_err,
-                sigma_att_rad=sigma_rad,
-                return_debug=False, accumulate_gramian=False,
-                **config_kwargs,
-            )
-            rows.append({
-                "trial_id":   trial_id, "seed": seed,
-                "sigma_deg":  float(sigma_deg),
-                "miss_ekf":   float(out["miss_ekf"]),
-                "pos_err_tc": float(out["pos_err_tc"]),
-                "nis_mean":   float(out["nis_mean"]),
-                "nees_mean":  float(out["nees_mean"]),
-                "valid_rate": float(out["valid_rate"]),
-            })
-        except Exception as exc:  # noqa: BLE001
-            print(f"  σ={sigma_deg} trial={trial_id} failed: {exc}")
-    return rows
+    return run_seeds_parallel(
+        truth=truth, n_seeds=int(n_seeds), base_seed=int(base_seed),
+        n_workers=int(n_workers),
+        kwargs_extra={**config_kwargs, "sigma_att_rad": sigma_rad},
+        extract_fields=[
+            ("miss_ekf",     "miss_ekf"),
+            ("pos_err_tc",   "pos_err_tc"),
+            ("nis_mean",     "nis_mean"),
+            ("nis_mean_all", "nis_mean_all"),
+            ("nees_mean",    "nees_mean"),
+            ("valid_rate",   "valid_rate"),
+        ],
+        extra_row_fields={"sigma_deg": float(sigma_deg)},
+    )
 
 
 def _plot_summary(
@@ -214,6 +196,9 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--q-acc",  type=float, default=1e-14)
     p.add_argument("--out", type=str, default="results/mc/attitude_noise_sweep")
     p.add_argument("--base-seed", type=int, default=7)
+    p.add_argument("--n-workers", type=int, default=-1,
+                   help="Process-pool size for parallel seed evaluation. "
+                        "-1 = cpu_count(); 1 = serial (use for SPICE).")
     add_truth_arg(p)
     return p.parse_args()
 
@@ -221,7 +206,6 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     apply_dark_theme()
-    run_case = load_midcourse_run_case(truth=args.truth)
     units = RunUnits.for_truth(args.truth)
 
     config_kwargs = dict(
@@ -232,11 +216,11 @@ def main() -> None:
 
     rows_by_sigma: dict[float, list[dict]] = {}
     for s in args.sigma_att_deg_list:
-        print(f"\n▸ σ_att = {s:.4f} deg")
+        print(f"\n▸ σ_att = {s:.4f} deg  n_workers={args.n_workers}")
         rows_by_sigma[float(s)] = _run_one(
-            run_case=run_case, sigma_deg=float(s),
+            truth=str(args.truth), sigma_deg=float(s),
             n_seeds=int(args.n_seeds), base_seed=int(args.base_seed),
-            config_kwargs=config_kwargs,
+            config_kwargs=config_kwargs, n_workers=int(args.n_workers),
         )
 
     out_dir = apply_truth_suffix(repo_path(args.out), args.truth)

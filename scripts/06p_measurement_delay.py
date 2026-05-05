@@ -37,42 +37,24 @@ _KM_PER_LU = 384_400.0
 
 
 def _run_one_delay(
-    *, run_case, delay_steps: int, n_seeds: int, base_seed: int,
-    config_kwargs: dict,
+    *, truth: str, delay_steps: int, n_seeds: int, base_seed: int,
+    config_kwargs: dict, n_workers: int,
 ) -> list[dict]:
-    from mc.sampler import (
-        make_trial_rng,
-        sample_estimation_error,
-        sample_injection_error,
+    from _parallel_seeds import run_seeds_parallel
+    return run_seeds_parallel(
+        truth=truth, n_seeds=int(n_seeds), base_seed=int(base_seed),
+        n_workers=int(n_workers),
+        kwargs_extra={**config_kwargs,
+                      "meas_delay_steps": int(delay_steps)},
+        extract_fields=[
+            ("miss_ekf",   "miss_ekf"),
+            ("pos_err_tc", "pos_err_tc"),
+            ("nis_mean",   "nis_mean"),
+            ("nees_mean",  "nees_mean"),
+            ("valid_rate", "valid_rate"),
+        ],
+        extra_row_fields={"delay_steps": int(delay_steps)},
     )
-
-    rows: list[dict] = []
-    for trial_id in range(int(n_seeds)):
-        rng = make_trial_rng(base_seed, trial_id)
-        seed = int(rng.integers(0, 2**31 - 1))
-        dx0 = sample_injection_error(rng, sigma_r=1e-4, sigma_v=1e-4,
-                                     planar_only=False)
-        est_err = sample_estimation_error(rng, sigma_r=1e-4, sigma_v=1e-4,
-                                          planar_only=False)
-        try:
-            out = run_case(
-                seed=seed, dx0=dx0, est_err=est_err,
-                meas_delay_steps=int(delay_steps),
-                return_debug=False, accumulate_gramian=False,
-                **config_kwargs,
-            )
-            rows.append({
-                "trial_id":      trial_id, "seed": seed,
-                "delay_steps":   int(delay_steps),
-                "miss_ekf":      float(out["miss_ekf"]),
-                "pos_err_tc":    float(out["pos_err_tc"]),
-                "nis_mean":      float(out["nis_mean"]),
-                "nees_mean":     float(out["nees_mean"]),
-                "valid_rate":    float(out["valid_rate"]),
-            })
-        except Exception as exc:  # noqa: BLE001
-            print(f"  delay={delay_steps} trial={trial_id} failed: {exc}")
-    return rows
 
 
 def _plot_delay(
@@ -210,6 +192,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--q-acc",  type=float, default=1e-14)
     p.add_argument("--out", type=str, default="results/mc/measurement_delay")
     p.add_argument("--base-seed", type=int, default=7)
+    p.add_argument("--n-workers", type=int, default=-1,
+                   help="Process-pool size; -1 = cpu_count(); 1 = serial.")
     add_truth_arg(p)
     return p.parse_args()
 
@@ -217,7 +201,6 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     apply_dark_theme()
-    run_case = load_midcourse_run_case(truth=args.truth)
     units = RunUnits.for_truth(args.truth)
 
     config_kwargs = dict(
@@ -228,11 +211,11 @@ def main() -> None:
 
     rows_by_delay: dict[int, list[dict]] = {}
     for d in args.delay_steps_list:
-        print(f"\n▸ delay = {d} steps  (Δt = {d * args.dt_meas:.4f} ND)")
+        print(f"\n▸ delay = {d} steps  (Δt = {d * args.dt_meas:.4f} ND)  workers={args.n_workers}")
         rows_by_delay[int(d)] = _run_one_delay(
-            run_case=run_case, delay_steps=int(d),
+            truth=str(args.truth), delay_steps=int(d),
             n_seeds=int(args.n_seeds), base_seed=int(args.base_seed),
-            config_kwargs=config_kwargs,
+            config_kwargs=config_kwargs, n_workers=int(args.n_workers),
         )
 
     out_dir = apply_truth_suffix(repo_path(args.out), args.truth)

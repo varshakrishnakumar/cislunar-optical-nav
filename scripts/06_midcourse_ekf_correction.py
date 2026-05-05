@@ -157,7 +157,11 @@ def run_case(
     q_acc = float(q_acc)
 
     x_hat_hist:   list[np.ndarray] = []
+    # Moon-center NIS history (NaN when no Moon update at this epoch)
     nis_list:     list[float]      = []
+    # Per-epoch list of all accepted-update NIS values (Moon + every landmark)
+    nis_all_per_epoch: list[list[float]] = []
+    nis_landmarks_per_epoch: list[list[float]] = []
     nees_list:    list[float]      = []
     innov_2d_list: list[np.ndarray] = []
     pos_err_list:  list[float]     = []
@@ -167,13 +171,20 @@ def run_case(
     range_truth_hist:  list[float]      = []
     range_estimate_hist: list[float]    = []
     x_hat_pre_buf: list[np.ndarray]     = []
-    valid_arr     = np.zeros(k_tc + 1, dtype=bool)
+    # Per-epoch accept counters (index 0 always 0; valid_rate excludes it)
+    accepted_moon_arr      = np.zeros(k_tc + 1, dtype=bool)
+    accepted_landmarks_arr = np.zeros(k_tc + 1, dtype=int)
+    epoch_accepted_arr     = np.zeros(k_tc + 1, dtype=bool)
 
     # Observability Gramian: W = Σ_k Φ(t_k,t_0)ᵀ Hₖᵀ Hₖ Φ(t_k,t_0)
     # Eigenvectors of W reveal which state-space directions are (poorly)
-    # observable from bearing-only data. Gated for Monte Carlo efficiency.
-    Phi_cum          = np.eye(6, dtype=float) if accumulate_gramian else None
-    W_obs            = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
+    # observable from bearing-only data. Tracked separately for moon vs
+    # landmarks so the contribution of each information source can be
+    # compared in the observability plot.
+    Phi_cum            = np.eye(6, dtype=float) if accumulate_gramian else None
+    W_obs              = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
+    W_obs_moon         = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
+    W_obs_landmarks    = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
     gramian_eig_hist: list[np.ndarray] = []
 
     for k in range(1, k_tc + 1):
@@ -218,6 +229,10 @@ def run_case(
             R_perturb = random_small_rotation_dcm(rng, float(sigma_att_rad))
             R_cam_actual = R_perturb @ R_cam_actual
 
+        nis_all_this_epoch:        list[float] = []
+        nis_landmarks_this_epoch:  list[float] = []
+        moon_accepted = False
+
         if not disable_moon_center:
             meas = simulate_pixel_measurement(
                 r_sc=r_sc_true, r_body=r_body, intrinsics=intr,
@@ -239,15 +254,18 @@ def run_case(
                     )
                     if upd.accepted:
                         x_hat, P = upd.x_upd, upd.P_upd
+                        moon_accepted = True
                         if accumulate_gramian:
-                            W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
+                            HtH = upd.H.T @ upd.H
+                            W_obs      += Phi_cum.T @ HtH @ Phi_cum
+                            W_obs_moon += Phi_cum.T @ HtH @ Phi_cum
                     nis_list.append(float(upd.nis))
+                    nis_all_this_epoch.append(float(upd.nis))
                     innov_2d_list.append(
                         upd.final_innovation.copy()
                         if upd.final_innovation is not None
                         else upd.innovation.copy()
                     )
-                    valid_arr[k] = True
                 else:
                     nis_list.append(float("nan"))
                     innov_2d_list.append(np.full(2, np.nan))
@@ -261,7 +279,10 @@ def run_case(
         # Optional landmark updates. Treat each landmark as an inertial
         # point near r_body; generate a separate bearing measurement and
         # update the filter scalarly. Same R_cam_actual is used so the
-        # bearing inherits the same attitude error.
+        # bearing inherits the same attitude error. Each accepted update
+        # also contributes to the observability Gramian and is tracked
+        # in the per-epoch accept counter.
+        n_lmk_accepted = 0
         for lmk_pos in lmk_arr:
             lm_meas = simulate_pixel_measurement(
                 r_sc=r_sc_true, r_body=lmk_pos, intrinsics=intr,
@@ -279,6 +300,19 @@ def run_case(
             upd_l = bearing_update_tangent(x_hat, P, u_l, lmk_pos, float(sig_l))
             if upd_l.accepted:
                 x_hat, P = upd_l.x_upd, upd_l.P_upd
+                n_lmk_accepted += 1
+                if accumulate_gramian:
+                    HtH_l = upd_l.H.T @ upd_l.H
+                    W_obs           += Phi_cum.T @ HtH_l @ Phi_cum
+                    W_obs_landmarks += Phi_cum.T @ HtH_l @ Phi_cum
+            nis_all_this_epoch.append(float(upd_l.nis))
+            nis_landmarks_this_epoch.append(float(upd_l.nis))
+
+        accepted_moon_arr[k]      = moon_accepted
+        accepted_landmarks_arr[k] = n_lmk_accepted
+        epoch_accepted_arr[k]     = bool(moon_accepted) or (n_lmk_accepted > 0)
+        nis_all_per_epoch.append(nis_all_this_epoch)
+        nis_landmarks_per_epoch.append(nis_landmarks_this_epoch)
 
         # NEES: (x̂ − x_true)ᵀ P⁻¹ (x̂ − x_true), chi²(6) distributed for a
         # consistent filter. Use truth at k (not k_meas) so the consistency
@@ -317,9 +351,44 @@ def run_case(
     P_tc         = P.copy()
     pos_err_tc   = _norm(x_hat_tc[:3] - x_true_tc[:3])
     tracePpos_tc = float(np.trace(P_tc[:3, :3]))
-    valid_rate   = float(np.mean(valid_arr[: k_tc + 1]))
+
+    # valid_rate counts only the k=1..k_tc epochs (k=0 is the initial
+    # state, never a measurement). Three flavors so reviewers can
+    # distinguish moon-only vs landmark-only vs combined coverage:
+    n_epochs       = k_tc  # we ran k=1..k_tc
+    valid_rate     = (
+        float(np.mean(epoch_accepted_arr[1:k_tc + 1]))
+        if n_epochs > 0 else float("nan")
+    )
+    valid_rate_moon = (
+        float(np.mean(accepted_moon_arr[1:k_tc + 1]))
+        if n_epochs > 0 else float("nan")
+    )
+    n_lmk = int(lmk_arr.shape[0])
+    if n_lmk > 0 and n_epochs > 0:
+        valid_rate_landmarks = float(
+            np.mean(accepted_landmarks_arr[1:k_tc + 1] / float(n_lmk))
+        )
+    else:
+        valid_rate_landmarks = float("nan")
+
+    # NIS aggregations: legacy `nis_mean` is moon-only (preserves
+    # downstream MC plots); `nis_mean_all` averages across moon +
+    # landmark accepted updates.
     nis_finite   = nis_arr[np.isfinite(nis_arr)]
     nis_mean     = float(np.mean(nis_finite)) if nis_finite.size else float("nan")
+    flat_all = np.array(
+        [v for ep in nis_all_per_epoch for v in ep if np.isfinite(v)],
+        dtype=float,
+    )
+    nis_mean_all = float(np.mean(flat_all)) if flat_all.size else float("nan")
+    flat_lmk = np.array(
+        [v for ep in nis_landmarks_per_epoch for v in ep if np.isfinite(v)],
+        dtype=float,
+    )
+    nis_mean_landmarks = (
+        float(np.mean(flat_lmk)) if flat_lmk.size else float("nan")
+    )
     nees_finite  = nees_arr[np.isfinite(nees_arr)]
     nees_mean    = float(np.mean(nees_finite)) if nees_finite.size else float("nan")
 
@@ -357,16 +426,28 @@ def run_case(
     # prevent confusion with the fractional dv_inflation_pct ratio metric.
     dv_mag_bias    = dv_ekf_mag - dv_perfect_mag
 
-    # Parallax: total angular sweep of LOS-to-Moon between t0 and tc.
+    # Parallax: angular sweep of LOS-to-Moon. Net = endpoint-to-endpoint
+    # angle (good for short monotonic arcs); cumulative = sum of
+    # step-to-step angle deltas (correct under multi-rev / oscillatory
+    # LOS geometry where the net under-counts the information-bearing
+    # angular path).
     los_inertial_arr = np.asarray(los_inertial_hist)
-    if los_inertial_arr.size and np.all(np.isfinite(los_inertial_arr[0])) \
+    if los_inertial_arr.size >= 2 \
+        and np.all(np.isfinite(los_inertial_arr[0])) \
         and np.all(np.isfinite(los_inertial_arr[-1])):
-        cos_total = float(np.clip(
+        cos_net = float(np.clip(
             np.dot(los_inertial_arr[0], los_inertial_arr[-1]), -1.0, 1.0
         ))
-        parallax_total_rad = float(np.arccos(cos_total))
+        parallax_net_rad = float(np.arccos(cos_net))
+        dots = np.einsum("ij,ij->i", los_inertial_arr[:-1], los_inertial_arr[1:])
+        dots = np.clip(dots, -1.0, 1.0)
+        parallax_cumulative_rad = float(np.sum(np.arccos(dots)))
     else:
-        parallax_total_rad = float("nan")
+        parallax_net_rad        = float("nan")
+        parallax_cumulative_rad = float("nan")
+    # Backwards-compat: parallax_total_rad keeps its old name (= net) so
+    # already-written 06m plots/CSVs don't break.
+    parallax_total_rad = parallax_net_rad
     range_err_tc = float(abs(range_estimate_hist[-1] - range_truth_hist[-1])) \
         if range_truth_hist else float("nan")
 
@@ -394,10 +475,22 @@ def run_case(
         "miss_ekf":         miss_ekf,
         "pos_err_tc":       pos_err_tc,
         "tracePpos_tc":     tracePpos_tc,
+        # valid_rate (legacy name) is now epoch-level: any accepted
+        # update at this epoch counts. valid_rate_moon and
+        # valid_rate_landmarks split it for the landmark comparison.
         "valid_rate":       valid_rate,
-        "nis_mean":         nis_mean,
+        "valid_rate_moon":  valid_rate_moon,
+        "valid_rate_landmarks": valid_rate_landmarks,
+        # NIS: legacy `nis_mean` is moon-only (matches old plots);
+        # `nis_mean_all` mixes moon + landmarks; `nis_mean_landmarks`
+        # is landmark-only.
+        "nis_mean":            nis_mean,
+        "nis_mean_all":        nis_mean_all,
+        "nis_mean_landmarks":  nis_mean_landmarks,
         "nees_mean":        nees_mean,
-        "parallax_total_rad": parallax_total_rad,
+        "parallax_net_rad":        parallax_net_rad,
+        "parallax_cumulative_rad": parallax_cumulative_rad,
+        "parallax_total_rad":      parallax_total_rad,  # legacy alias
         "range_err_tc":       range_err_tc,
     }
     if not return_debug:
@@ -426,14 +519,19 @@ def run_case(
             "P_diag_hist":   P_diag_arr,
             "P_full_hist":   P_full_arr,
             "P_tc":          P.copy(),
-            "nis_hist":      nis_arr,
+            "nis_hist":      nis_arr,           # moon-only (NaN where no moon update)
             "nees_hist":     nees_arr,
             "innov_2d_hist":    innov_2d_arr,
             "W_obs":            W_obs,
+            "W_obs_moon":       W_obs_moon,
+            "W_obs_landmarks":  W_obs_landmarks,
             "gramian_eig_hist": gramian_eig_arr,
             "los_inertial_hist": los_inertial_arr,
             "range_truth_hist":    range_truth_arr,
             "range_estimate_hist": range_estimate_arr,
+            "accepted_moon_arr":      accepted_moon_arr,
+            "accepted_landmarks_arr": accepted_landmarks_arr,
+            "epoch_accepted_arr":     epoch_accepted_arr,
             "xs_unc_tf":    res_unc.x,
             "xs_perf_tf":   res_perf.x,
             "xs_ekf_tf":    res_ekf.x,
@@ -613,6 +711,8 @@ def run_case_spice(
         # ── EKF loop ─────────────────────────────────────────────────────────
         x_hat_hist:    list[np.ndarray] = []
         nis_list:      list[float]      = []
+        nis_all_per_epoch: list[list[float]] = []
+        nis_landmarks_per_epoch: list[list[float]] = []
         nees_list:     list[float]      = []
         innov_2d_list: list[np.ndarray] = []
         pos_err_list:  list[float]      = []
@@ -622,9 +722,13 @@ def run_case_spice(
         los_inertial_hist: list[np.ndarray] = []
         range_truth_hist:    list[float] = []
         range_estimate_hist: list[float] = []
-        valid_arr      = np.zeros(k_tc + 1, dtype=bool)
-        Phi_cum        = np.eye(6, dtype=float) if accumulate_gramian else None
-        W_obs          = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
+        accepted_moon_arr      = np.zeros(k_tc + 1, dtype=bool)
+        accepted_landmarks_arr = np.zeros(k_tc + 1, dtype=int)
+        epoch_accepted_arr     = np.zeros(k_tc + 1, dtype=bool)
+        Phi_cum         = np.eye(6, dtype=float) if accumulate_gramian else None
+        W_obs           = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
+        W_obs_moon      = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
+        W_obs_landmarks = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
         gramian_eig_hist: list[np.ndarray] = []
 
         for k in range(1, k_tc + 1):
@@ -637,10 +741,19 @@ def run_case_spice(
             if accumulate_gramian:
                 Phi_cum = Phi_step @ Phi_cum
 
-            # Moon J2000 position at this measurement step (km)
-            t_k    = float(t_meas_s[k])
-            r_body = ephemeris.position_km("MOON", t_k)
-            k_meas = max(0, k - meas_delay_steps)
+            # Moon J2000 position at this measurement step (km).
+            # When meas_delay_steps > 0, the synthetic image is built
+            # with the spacecraft *and* Moon positions at the delayed
+            # epoch, so the bearing is geometrically self-consistent —
+            # the filter then ingests it at the current timestamp.
+            t_k        = float(t_meas_s[k])
+            k_meas     = max(0, k - meas_delay_steps)
+            t_meas_eff = float(t_meas_s[k_meas])
+            r_body          = ephemeris.position_km("MOON", t_k)
+            r_body_at_meas  = (
+                r_body if k_meas == k
+                else ephemeris.position_km("MOON", t_meas_eff)
+            )
             r_sc_true = xs_true[k_meas, :3]
 
             x_hat_pre_buf.append(x_hat.copy())
@@ -649,12 +762,15 @@ def run_case_spice(
                     x_hat_for_pointing = x_hat_pre_buf[-1 - pointing_lag_steps]
                 else:
                     x_hat_for_pointing = x_hat
+                # The camera commands a pointing toward the *currently
+                # believed* Moon location (r_body @ t_k), even when the
+                # measurement geometry is taken at the delayed epoch.
                 R_cam_cmd = camera_dcm_from_boresight(
                     r_body - x_hat_for_pointing[:3], camera_forward_axis="+z"
                 )
             elif camera_mode == "truth_tracking":
                 R_cam_cmd = camera_dcm_from_boresight(
-                    r_body - r_sc_true, camera_forward_axis="+z"
+                    r_body_at_meas - r_sc_true, camera_forward_axis="+z"
                 )
             else:
                 R_cam_cmd = R_fixed
@@ -666,9 +782,16 @@ def run_case_spice(
                 R_perturb = random_small_rotation_dcm(rng, float(sigma_att_rad))
                 R_cam_actual = R_perturb @ R_cam_actual
 
+            nis_all_this_epoch:       list[float] = []
+            nis_landmarks_this_epoch: list[float] = []
+            moon_accepted = False
+
             if not disable_moon_center:
+                # Truth bearing geometry uses the delayed Moon position;
+                # the filter still hypothesizes r_body @ t_k, so any
+                # delay surfaces as un-modeled bearing residual.
                 meas = simulate_pixel_measurement(
-                    r_sc=r_sc_true, r_body=r_body, intrinsics=intr,
+                    r_sc=r_sc_true, r_body=r_body_at_meas, intrinsics=intr,
                     R_cam_from_frame=R_cam_actual, sigma_px=float(sigma_px),
                     rng=rng, t=t_k,
                     dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
@@ -682,15 +805,18 @@ def run_case_spice(
                         upd = bearing_update_tangent(x_hat, P, u_g, r_body, float(sig_k))
                         if upd.accepted:
                             x_hat, P = upd.x_upd, upd.P_upd
+                            moon_accepted = True
                             if accumulate_gramian:
-                                W_obs += Phi_cum.T @ upd.H.T @ upd.H @ Phi_cum
+                                HtH = upd.H.T @ upd.H
+                                W_obs      += Phi_cum.T @ HtH @ Phi_cum
+                                W_obs_moon += Phi_cum.T @ HtH @ Phi_cum
                         nis_list.append(float(upd.nis))
+                        nis_all_this_epoch.append(float(upd.nis))
                         innov_2d_list.append(
                             upd.final_innovation.copy()
                             if upd.final_innovation is not None
                             else upd.innovation.copy()
                         )
-                        valid_arr[k] = True
                     else:
                         nis_list.append(float("nan"))
                         innov_2d_list.append(np.full(2, np.nan))
@@ -701,12 +827,16 @@ def run_case_spice(
                 nis_list.append(float("nan"))
                 innov_2d_list.append(np.full(2, np.nan))
 
-            # Landmarks: each Moon-fixed offset is added to the current
-            # Moon ephemeris position to give an inertial landmark.
+            # Landmarks: Moon-fixed offsets added to the *current* Moon
+            # ephemeris position for the filter, but the truth image is
+            # generated against the delayed Moon position so the geometry
+            # is consistent with meas_delay_steps.
+            n_lmk_accepted = 0
             for off_km in lmk_offsets_km:
-                lmk_pos = r_body + off_km
+                lmk_pos_meas   = r_body_at_meas + off_km
+                lmk_pos_filter = r_body         + off_km
                 lm_meas = simulate_pixel_measurement(
-                    r_sc=r_sc_true, r_body=lmk_pos, intrinsics=intr,
+                    r_sc=r_sc_true, r_body=lmk_pos_meas, intrinsics=intr,
                     R_cam_from_frame=R_cam_actual, sigma_px=float(sigma_px),
                     rng=rng, t=t_k,
                     dropout_p=float(dropout_prob), out_of_frame="drop", behind="drop",
@@ -718,9 +848,24 @@ def run_case_spice(
                 )
                 if not np.all(np.isfinite(u_l)):
                     continue
-                upd_l = bearing_update_tangent(x_hat, P, u_l, lmk_pos, float(sig_l))
+                upd_l = bearing_update_tangent(
+                    x_hat, P, u_l, lmk_pos_filter, float(sig_l)
+                )
                 if upd_l.accepted:
                     x_hat, P = upd_l.x_upd, upd_l.P_upd
+                    n_lmk_accepted += 1
+                    if accumulate_gramian:
+                        HtH_l = upd_l.H.T @ upd_l.H
+                        W_obs           += Phi_cum.T @ HtH_l @ Phi_cum
+                        W_obs_landmarks += Phi_cum.T @ HtH_l @ Phi_cum
+                nis_all_this_epoch.append(float(upd_l.nis))
+                nis_landmarks_this_epoch.append(float(upd_l.nis))
+
+            accepted_moon_arr[k]      = moon_accepted
+            accepted_landmarks_arr[k] = n_lmk_accepted
+            epoch_accepted_arr[k]     = bool(moon_accepted) or (n_lmk_accepted > 0)
+            nis_all_per_epoch.append(nis_all_this_epoch)
+            nis_landmarks_per_epoch.append(nis_landmarks_this_epoch)
 
             err6 = x_hat - xs_true[k]
             try:
@@ -754,9 +899,38 @@ def run_case_spice(
         P_tc         = P.copy()
         pos_err_tc   = _norm(x_hat_tc[:3] - x_true_tc[:3])
         tracePpos_tc = float(np.trace(P_tc[:3, :3]))
-        valid_rate   = float(np.mean(valid_arr[: k_tc + 1]))
+
+        n_epochs = k_tc
+        valid_rate = (
+            float(np.mean(epoch_accepted_arr[1:k_tc + 1]))
+            if n_epochs > 0 else float("nan")
+        )
+        valid_rate_moon = (
+            float(np.mean(accepted_moon_arr[1:k_tc + 1]))
+            if n_epochs > 0 else float("nan")
+        )
+        n_lmk = int(lmk_offsets_km.shape[0])
+        if n_lmk > 0 and n_epochs > 0:
+            valid_rate_landmarks = float(
+                np.mean(accepted_landmarks_arr[1:k_tc + 1] / float(n_lmk))
+            )
+        else:
+            valid_rate_landmarks = float("nan")
+
         nis_finite   = nis_arr[np.isfinite(nis_arr)]
         nis_mean     = float(np.mean(nis_finite)) if nis_finite.size else float("nan")
+        flat_all = np.array(
+            [v for ep in nis_all_per_epoch for v in ep if np.isfinite(v)],
+            dtype=float,
+        )
+        nis_mean_all = float(np.mean(flat_all)) if flat_all.size else float("nan")
+        flat_lmk = np.array(
+            [v for ep in nis_landmarks_per_epoch for v in ep if np.isfinite(v)],
+            dtype=float,
+        )
+        nis_mean_landmarks = (
+            float(np.mean(flat_lmk)) if flat_lmk.size else float("nan")
+        )
         nees_finite  = nees_arr[np.isfinite(nees_arr)]
         nees_mean    = float(np.mean(nees_finite)) if nees_finite.size else float("nan")
 
@@ -794,14 +968,21 @@ def run_case_spice(
         dv_mag_bias    = dv_ekf_mag - dv_perfect_mag
 
         los_inertial_arr = np.asarray(los_inertial_hist)
-        if los_inertial_arr.size and np.all(np.isfinite(los_inertial_arr[0])) \
+        if los_inertial_arr.size >= 2 \
+            and np.all(np.isfinite(los_inertial_arr[0])) \
             and np.all(np.isfinite(los_inertial_arr[-1])):
-            cos_total = float(np.clip(
+            cos_net = float(np.clip(
                 np.dot(los_inertial_arr[0], los_inertial_arr[-1]), -1.0, 1.0
             ))
-            parallax_total_rad = float(np.arccos(cos_total))
+            parallax_net_rad = float(np.arccos(cos_net))
+            dots = np.einsum("ij,ij->i",
+                             los_inertial_arr[:-1], los_inertial_arr[1:])
+            dots = np.clip(dots, -1.0, 1.0)
+            parallax_cumulative_rad = float(np.sum(np.arccos(dots)))
         else:
-            parallax_total_rad = float("nan")
+            parallax_net_rad        = float("nan")
+            parallax_cumulative_rad = float("nan")
+        parallax_total_rad = parallax_net_rad
         range_err_tc = float(abs(range_estimate_hist[-1] - range_truth_hist[-1])) \
             if range_truth_hist else float("nan")
 
@@ -832,10 +1013,16 @@ def run_case_spice(
             "miss_ekf":         miss_ekf,    # km
             "pos_err_tc":       pos_err_tc,  # km
             "tracePpos_tc":     tracePpos_tc,
-            "valid_rate":       valid_rate,
-            "nis_mean":         nis_mean,
+            "valid_rate":           valid_rate,
+            "valid_rate_moon":      valid_rate_moon,
+            "valid_rate_landmarks": valid_rate_landmarks,
+            "nis_mean":             nis_mean,
+            "nis_mean_all":         nis_mean_all,
+            "nis_mean_landmarks":   nis_mean_landmarks,
             "nees_mean":        nees_mean,
-            "parallax_total_rad": parallax_total_rad,
+            "parallax_net_rad":        parallax_net_rad,
+            "parallax_cumulative_rad": parallax_cumulative_rad,
+            "parallax_total_rad":      parallax_total_rad,  # legacy alias
             "range_err_tc":       range_err_tc,
         }
         if not return_debug:
@@ -868,10 +1055,15 @@ def run_case_spice(
                 "nees_hist":        nees_arr,
                 "innov_2d_hist":    innov_2d_arr,
                 "W_obs":            W_obs,
+                "W_obs_moon":       W_obs_moon,
+                "W_obs_landmarks":  W_obs_landmarks,
                 "gramian_eig_hist": gramian_eig_arr,
                 "los_inertial_hist":   los_inertial_arr,
                 "range_truth_hist":    range_truth_arr,
                 "range_estimate_hist": range_estimate_arr,
+                "accepted_moon_arr":      accepted_moon_arr,
+                "accepted_landmarks_arr": accepted_landmarks_arr,
+                "epoch_accepted_arr":     epoch_accepted_arr,
                 "xs_unc_tf":        res_unc.x,
                 "xs_perf_tf":       res_perf.x,
                 "xs_ekf_tf":        res_ekf.x,

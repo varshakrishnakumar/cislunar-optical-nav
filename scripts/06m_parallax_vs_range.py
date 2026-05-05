@@ -41,47 +41,41 @@ _KM_PER_LU = 384_400.0
 
 
 def _run_seed_grid(
-    *, run_case, tc_list: list[float], n_seeds: int,
-    base_seed: int, config_kwargs: dict,
+    *, truth: str, tc_list: list[float], n_seeds: int,
+    base_seed: int, config_kwargs: dict, n_workers: int,
 ) -> dict:
-    from mc.sampler import (
-        make_trial_rng,
-        sample_estimation_error,
-        sample_injection_error,
-    )
+    from _parallel_seeds import run_seeds_parallel
 
-    parallax: list[float] = []
+    parallax_net: list[float] = []
+    parallax_cum: list[float] = []
     range_err: list[float] = []
     pos_err:   list[float] = []
     miss:      list[float] = []
     tc_arr:    list[float] = []
     for tc in tc_list:
-        for trial_id in range(int(n_seeds)):
-            rng = make_trial_rng(base_seed, trial_id)
-            seed = int(rng.integers(0, 2**31 - 1))
-            dx0 = sample_injection_error(
-                rng, sigma_r=1e-4, sigma_v=1e-4, planar_only=False,
-            )
-            est_err = sample_estimation_error(
-                rng, sigma_r=1e-4, sigma_v=1e-4, planar_only=False,
-            )
-            try:
-                out = run_case(
-                    seed=seed, dx0=dx0, est_err=est_err,
-                    tc=float(tc),
-                    return_debug=False, accumulate_gramian=False,
-                    **config_kwargs,
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"  tc={tc} trial={trial_id} failed: {exc}")
-                continue
-            parallax.append(float(out["parallax_total_rad"]))
-            range_err.append(float(out["range_err_tc"]))
-            pos_err.append(float(out["pos_err_tc"]))
-            miss.append(float(out["miss_ekf"]))
-            tc_arr.append(float(tc))
+        rows = run_seeds_parallel(
+            truth=truth, n_seeds=int(n_seeds), base_seed=int(base_seed),
+            n_workers=int(n_workers),
+            kwargs_extra={**config_kwargs, "tc": float(tc)},
+            extract_fields=[
+                ("parallax_net_rad",        "parallax_net_rad"),
+                ("parallax_cumulative_rad", "parallax_cumulative_rad"),
+                ("range_err_tc",            "range_err_tc"),
+                ("pos_err_tc",              "pos_err_tc"),
+                ("miss_ekf",                "miss_ekf"),
+            ],
+            extra_row_fields={"tc": float(tc)},
+        )
+        for r in rows:
+            parallax_net.append(r["parallax_net_rad"])
+            parallax_cum.append(r["parallax_cumulative_rad"])
+            range_err.append(r["range_err_tc"])
+            pos_err.append(r["pos_err_tc"])
+            miss.append(r["miss_ekf"])
+            tc_arr.append(r["tc"])
     return dict(
-        parallax=np.asarray(parallax),
+        parallax_net=np.asarray(parallax_net),
+        parallax_cum=np.asarray(parallax_cum),
         range_err=np.asarray(range_err),
         pos_err=np.asarray(pos_err),
         miss=np.asarray(miss),
@@ -94,7 +88,10 @@ def _plot_parallax(
     outpath: Path,
 ) -> None:
     apply_dark_theme()
-    parallax_deg = np.rad2deg(data["parallax"])
+    # Cumulative parallax is the correct measure under multi-rev /
+    # oscillatory LOS geometry; net parallax under-counts it. We plot
+    # cumulative (primary) and report net in the summary file too.
+    parallax_deg_cum = np.rad2deg(data["parallax_cum"])
     if units.truth == "cr3bp":
         range_err_km = data["range_err"] * _KM_PER_LU
         pos_err_km   = data["pos_err"]   * _KM_PER_LU
@@ -120,22 +117,23 @@ def _plot_parallax(
         for sp in ax.spines.values():
             sp.set_edgecolor(BORDER)
         ax.grid(True, color=BORDER, lw=0.3)
-        sc = ax.scatter(parallax_deg, y, c=tc_norm, cmap=cmap, s=22,
+        sc = ax.scatter(parallax_deg_cum, y, c=tc_norm, cmap=cmap, s=22,
                         alpha=0.85, edgecolors="none")
         # log-fit
-        mask = (parallax_deg > 0) & (y > 0) & np.isfinite(parallax_deg) & np.isfinite(y)
+        mask = (parallax_deg_cum > 0) & (y > 0) \
+            & np.isfinite(parallax_deg_cum) & np.isfinite(y)
         if mask.sum() > 5:
-            slope, intercept = np.polyfit(np.log10(parallax_deg[mask]),
+            slope, intercept = np.polyfit(np.log10(parallax_deg_cum[mask]),
                                            np.log10(y[mask]), 1)
-            xfit = np.linspace(parallax_deg[mask].min(),
-                               parallax_deg[mask].max(), 100)
+            xfit = np.linspace(parallax_deg_cum[mask].min(),
+                               parallax_deg_cum[mask].max(), 100)
             yfit = 10 ** (slope * np.log10(xfit) + intercept)
             ax.plot(xfit, yfit, color=AMBER, ls="--", lw=1.3,
                     label=f"power fit  slope = {slope:.2f}")
             ax.legend(fontsize=9)
         ax.set_xscale("log")
         ax.set_yscale("log")
-        ax.set_xlabel("parallax (LOS sweep)  [deg]", color=TEXT)
+        ax.set_xlabel("cumulative LOS angular change  [deg]", color=TEXT)
         ax.set_ylabel(ylabel, color=TEXT)
         ax.set_title(title, color=TEXT, fontweight="bold")
 
@@ -155,33 +153,44 @@ def _plot_parallax(
 
 def _write_summary(data: dict, units: RunUnits, out_txt: Path) -> None:
     out_txt.parent.mkdir(parents=True, exist_ok=True)
-    parallax_deg = np.rad2deg(data["parallax"])
+    parallax_deg_net = np.rad2deg(data["parallax_net"])
+    parallax_deg_cum = np.rad2deg(data["parallax_cum"])
     range_err_km = data["range_err"] * (_KM_PER_LU if units.truth == "cr3bp" else 1.0)
     miss_km      = data["miss"]      * (_KM_PER_LU if units.truth == "cr3bp" else 1.0)
     lines = [
         "Parallax vs range error — bin medians",
-        "=" * 60,
-        f"{'tc':>6}  {'parallax_med [deg]':>20}  "
+        "Net parallax = endpoint-to-endpoint LOS angle (under-counts on "
+        "multi-rev arcs).",
+        "Cumulative parallax = sum of step-to-step LOS angle deltas "
+        "(correct under any geometry).",
+        "=" * 84,
+        f"{'tc':>6}  {'plx_net [deg]':>15}  {'plx_cum [deg]':>15}  "
         f"{'range_err_med [km]':>20}  {'miss_med [km]':>15}",
     ]
     for tc in sorted(np.unique(data["tc"])):
         m = data["tc"] == tc
         lines.append(
-            f"{tc:6g}  {np.nanmedian(parallax_deg[m]):20.3f}  "
+            f"{tc:6g}  {np.nanmedian(parallax_deg_net[m]):15.3f}  "
+            f"{np.nanmedian(parallax_deg_cum[m]):15.3f}  "
             f"{np.nanmedian(range_err_km[m]):20.3f}  "
             f"{np.nanmedian(miss_km[m]):15.3f}"
         )
 
-    # Power-law fit summary
-    mask = (parallax_deg > 0) & (range_err_km > 0)
-    if mask.sum() > 5:
-        slope, intercept = np.polyfit(np.log10(parallax_deg[mask]),
-                                       np.log10(range_err_km[mask]), 1)
-        lines.append("")
-        lines.append(
-            f"power-law fit:  range_err ∝ parallax^{slope:.3f}  "
-            f"(intercept = 10^{intercept:.2f})"
-        )
+    # Power-law fit summary against cumulative parallax (the better
+    # geometric quantity); also report net for legacy comparison.
+    for label, deg_arr in (("cumulative", parallax_deg_cum),
+                            ("net",        parallax_deg_net)):
+        mask = (deg_arr > 0) & (range_err_km > 0) \
+            & np.isfinite(deg_arr) & np.isfinite(range_err_km)
+        if mask.sum() > 5:
+            slope, intercept = np.polyfit(np.log10(deg_arr[mask]),
+                                           np.log10(range_err_km[mask]), 1)
+            lines.append("")
+            lines.append(
+                f"power-law fit ({label} parallax):  "
+                f"range_err ∝ parallax^{slope:.3f}  "
+                f"(intercept = 10^{intercept:.2f})"
+            )
     out_txt.write_text("\n".join(lines))
 
 
@@ -201,6 +210,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--q-acc", type=float, default=1e-14)
     p.add_argument("--out", type=str, default="results/mc/parallax_vs_range")
     p.add_argument("--base-seed", type=int, default=7)
+    p.add_argument("--n-workers", type=int, default=-1,
+                   help="Process-pool size; -1 = cpu_count(); 1 = serial.")
     add_truth_arg(p)
     return p.parse_args()
 
@@ -208,7 +219,6 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     apply_dark_theme()
-    run_case = load_midcourse_run_case(truth=args.truth)
     units = RunUnits.for_truth(args.truth)
 
     config_kwargs = dict(
@@ -218,11 +228,11 @@ def main() -> None:
     )
 
     print(f"▸ tc grid: {args.tc_list}  n_seeds/tc: {args.n_seeds}  "
-          f"truth: {args.truth}")
+          f"truth: {args.truth}  workers: {args.n_workers}")
     data = _run_seed_grid(
-        run_case=run_case, tc_list=list(args.tc_list),
+        truth=str(args.truth), tc_list=list(args.tc_list),
         n_seeds=int(args.n_seeds), base_seed=int(args.base_seed),
-        config_kwargs=config_kwargs,
+        config_kwargs=config_kwargs, n_workers=int(args.n_workers),
     )
 
     out_dir = apply_truth_suffix(repo_path(args.out), args.truth)

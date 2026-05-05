@@ -44,48 +44,26 @@ _KM_PER_LU = 384_400.0
 
 
 def _run_one_sweep(
-    *, run_case, n_trials: int, P0_scale: float, base_seed: int,
-    config_kwargs: dict,
+    *, truth: str, n_trials: int, P0_scale: float, base_seed: int,
+    config_kwargs: dict, n_workers: int,
 ) -> list[dict]:
     """Run an MC sweep at a fixed P0_scale; return per-trial dict rows."""
-    from mc.sampler import (
-        make_trial_rng,
-        sample_estimation_error,
-        sample_injection_error,
+    from _parallel_seeds import run_seeds_parallel
+    return run_seeds_parallel(
+        truth=truth, n_seeds=int(n_trials), base_seed=int(base_seed),
+        n_workers=int(n_workers),
+        kwargs_extra={**config_kwargs, "P0_scale": float(P0_scale)},
+        extract_fields=[
+            ("miss_ekf",       "miss_ekf"),
+            ("pos_err_tc",     "pos_err_tc"),
+            ("tracePpos_tc",   "tracePpos_tc"),
+            ("nis_mean",       "nis_mean"),
+            ("nees_mean",      "nees_mean"),
+            ("valid_rate",     "valid_rate"),
+            ("dv_delta_mag",   "dv_delta_mag"),
+        ],
+        extra_row_fields={"P0_scale": float(P0_scale)},
     )
-
-    rows: list[dict] = []
-    for trial_id in range(int(n_trials)):
-        rng = make_trial_rng(base_seed, trial_id)
-        seed = int(rng.integers(0, 2**31 - 1))
-        dx0 = sample_injection_error(
-            rng, sigma_r=1e-4, sigma_v=1e-4, planar_only=False,
-        )
-        est_err = sample_estimation_error(
-            rng, sigma_r=1e-4, sigma_v=1e-4, planar_only=False,
-        )
-        try:
-            out = run_case(
-                seed=seed, dx0=dx0, est_err=est_err,
-                P0_scale=float(P0_scale),
-                return_debug=False, accumulate_gramian=False,
-                **config_kwargs,
-            )
-            rows.append({
-                "trial_id":      trial_id,
-                "seed":          seed,
-                "P0_scale":      float(P0_scale),
-                "miss_ekf":      float(out["miss_ekf"]),
-                "pos_err_tc":    float(out["pos_err_tc"]),
-                "tracePpos_tc": float(out["tracePpos_tc"]),
-                "nis_mean":      float(out["nis_mean"]),
-                "nees_mean":     float(out["nees_mean"]),
-                "valid_rate":    float(out["valid_rate"]),
-                "dv_delta_mag":  float(out["dv_delta_mag"]),
-            })
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [scale={P0_scale}, trial={trial_id}] failed: {exc}")
-    return rows
 
 
 def _box_panel(
@@ -232,6 +210,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--q-acc",    type=float, default=1e-14)
     p.add_argument("--out", type=str, default="results/mc/P0_sensitivity")
     p.add_argument("--base-seed", type=int, default=7)
+    p.add_argument("--n-workers", type=int, default=-1,
+                   help="Process-pool size; -1 = cpu_count(); 1 = serial.")
     add_truth_arg(p)
     return p.parse_args()
 
@@ -241,7 +221,6 @@ def main() -> None:
 
     args = _parse_args()
     apply_dark_theme()
-    run_case = load_midcourse_run_case(truth=args.truth)
     units = RunUnits.for_truth(args.truth)
 
     config_kwargs = dict(
@@ -252,11 +231,12 @@ def main() -> None:
 
     rows_by_scale: dict[float, list[dict]] = {}
     for scale in args.P0_scales:
-        print(f"\n▸ P0_scale = {scale}  (n_trials={args.n_trials}, truth={args.truth})")
+        print(f"\n▸ P0_scale = {scale}  n_trials={args.n_trials}  "
+              f"truth={args.truth}  workers={args.n_workers}")
         rows = _run_one_sweep(
-            run_case=run_case, n_trials=int(args.n_trials),
+            truth=str(args.truth), n_trials=int(args.n_trials),
             P0_scale=float(scale), base_seed=int(args.base_seed),
-            config_kwargs=config_kwargs,
+            config_kwargs=config_kwargs, n_workers=int(args.n_workers),
         )
         rows_by_scale[float(scale)] = rows
 

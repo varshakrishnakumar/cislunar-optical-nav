@@ -43,31 +43,39 @@ _MOON_RADIUS_KM = 1737.4
 _MOON_RADIUS_ND = _MOON_RADIUS_KM / _KM_PER_LU
 
 
-def _default_landmarks_nd(mu: float) -> np.ndarray:
-    """Six landmarks: ±x, ±y, ±z one Moon-radius offset from Moon center.
+def _unit_offsets(case: str) -> np.ndarray:
+    """Return (N, 3) unit Moon-fixed offsets for the selected case."""
+    if case == "synthetic_6":
+        return np.array([
+            [+1, 0, 0], [-1, 0, 0],
+            [0, +1, 0], [0, -1, 0],
+            [0, 0, +1], [0, 0, -1],
+        ], dtype=float)
+    if case == "synthetic_12":
+        d = 1.0 / np.sqrt(2.0)
+        return np.array([
+            [+1, 0, 0], [-1, 0, 0],
+            [0, +1, 0], [0, -1, 0],
+            [0, 0, +1], [0, 0, -1],
+            [+d, +d, 0], [-d, +d, 0], [+d, -d, 0], [-d, -d, 0],
+            [+d, 0, +d], [0, +d, -d],
+        ], dtype=float)
+    if case in ("catalog_craters_6", "catalog_craters_12"):
+        from cv.landmark_catalog import catalog_unit_offsets
+        return catalog_unit_offsets(case)
+    raise ValueError(f"Unknown landmark case: {case!r}")
 
-    Treated as fixed inertial points in the rotating frame (CR3BP). For
-    SPICE this gets re-built per trial below.
-    """
+
+def _landmarks_nd(mu: float, case: str) -> np.ndarray:
+    """Build absolute landmark positions in the CR3BP rotating frame
+    for the selected case."""
     moon = np.array([1.0 - float(mu), 0.0, 0.0], dtype=float)
-    R = float(_MOON_RADIUS_ND)
-    offsets = np.array([
-        [+R, 0, 0], [-R, 0, 0],
-        [0, +R, 0], [0, -R, 0],
-        [0, 0, +R], [0, 0, -R],
-    ], dtype=float)
-    return moon[None, :] + offsets
+    return moon[None, :] + _unit_offsets(case) * float(_MOON_RADIUS_ND)
 
 
-def _default_landmark_offsets_km() -> np.ndarray:
-    """For SPICE: offsets in km; the run wrapper adds them to r_moon at
-    each step internally."""
-    R = float(_MOON_RADIUS_KM)
-    return np.array([
-        [+R, 0, 0], [-R, 0, 0],
-        [0, +R, 0], [0, -R, 0],
-        [0, 0, +R], [0, 0, -R],
-    ], dtype=float)
+def _landmark_offsets_km(case: str) -> np.ndarray:
+    """Moon-fixed offsets in km for the SPICE arm."""
+    return _unit_offsets(case) * float(_MOON_RADIUS_KM)
 
 
 _CONFIGS = ("moon_only", "landmarks_only", "moon_plus_landmarks")
@@ -87,58 +95,45 @@ def _disable_moon_only_landmarks(landmarks: np.ndarray) -> np.ndarray:
 
 
 def _run_config(
-    *, run_case, config: str, n_seeds: int, base_seed: int,
-    config_kwargs: dict, landmarks: np.ndarray,
-    dropout_for_moon_only: float = 0.0,
-    truth: str,
+    *, truth: str, config: str, n_seeds: int, base_seed: int,
+    config_kwargs: dict, landmarks_nd: np.ndarray,
+    landmarks_km: np.ndarray, n_workers: int,
 ) -> list[dict]:
     """Run n_seeds trials for a given config. Same seeds across configs."""
-    from mc.sampler import (
-        make_trial_rng,
-        sample_estimation_error,
-        sample_injection_error,
+    from _parallel_seeds import run_seeds_parallel
+
+    if config == "moon_only":
+        kw = {"disable_moon_center": False}
+    elif config == "landmarks_only":
+        kw = {"disable_moon_center": True}
+        if truth == "cr3bp":
+            kw["landmark_positions"] = landmarks_nd
+        else:
+            kw["landmark_offsets_km"] = landmarks_km
+    else:  # moon_plus_landmarks
+        kw = {"disable_moon_center": False}
+        if truth == "cr3bp":
+            kw["landmark_positions"] = landmarks_nd
+        else:
+            kw["landmark_offsets_km"] = landmarks_km
+
+    rows = run_seeds_parallel(
+        truth=truth, n_seeds=int(n_seeds), base_seed=int(base_seed),
+        n_workers=int(n_workers),
+        kwargs_extra={**config_kwargs, **kw},
+        extract_fields=[
+            ("miss_ekf",            "miss_ekf"),
+            ("pos_err_tc",          "pos_err_tc"),
+            ("valid_rate",          "valid_rate"),
+            ("valid_rate_moon",     "valid_rate_moon"),
+            ("valid_rate_landmarks","valid_rate_landmarks"),
+            ("nis_mean",            "nis_mean"),
+            ("nis_mean_all",        "nis_mean_all"),
+            ("nis_mean_landmarks",  "nis_mean_landmarks"),
+            ("nees_mean",           "nees_mean"),
+        ],
+        extra_row_fields={"config": config},
     )
-
-    rows: list[dict] = []
-    for trial_id in range(int(n_seeds)):
-        rng = make_trial_rng(base_seed, trial_id)
-        seed = int(rng.integers(0, 2**31 - 1))
-        dx0 = sample_injection_error(rng, sigma_r=1e-4, sigma_v=1e-4,
-                                     planar_only=False)
-        est_err = sample_estimation_error(rng, sigma_r=1e-4, sigma_v=1e-4,
-                                          planar_only=False)
-
-        if config == "moon_only":
-            kwargs = dict(disable_moon_center=False)
-        elif config == "landmarks_only":
-            kwargs = dict(disable_moon_center=True)
-            if truth == "cr3bp":
-                kwargs["landmark_positions"] = landmarks
-            else:
-                kwargs["landmark_offsets_km"] = _default_landmark_offsets_km()
-        else:  # moon_plus_landmarks
-            kwargs = dict(disable_moon_center=False)
-            if truth == "cr3bp":
-                kwargs["landmark_positions"] = landmarks
-            else:
-                kwargs["landmark_offsets_km"] = _default_landmark_offsets_km()
-
-        try:
-            out = run_case(
-                seed=seed, dx0=dx0, est_err=est_err,
-                return_debug=False, accumulate_gramian=False,
-                **{**config_kwargs, **kwargs},
-            )
-            rows.append({
-                "trial_id":   trial_id, "seed": seed, "config": config,
-                "miss_ekf":   float(out["miss_ekf"]),
-                "pos_err_tc": float(out["pos_err_tc"]),
-                "valid_rate": float(out["valid_rate"]),
-                "nis_mean":   float(out["nis_mean"]),
-                "nees_mean":  float(out["nees_mean"]),
-            })
-        except Exception as exc:  # noqa: BLE001
-            print(f"  config={config} trial={trial_id} failed: {exc}")
     return rows
 
 
@@ -162,7 +157,10 @@ def _box_plot(
                   if np.isfinite(r["pos_err_tc"])], dtype=float)
         for c in cfgs
     ]
-    valid = [
+    # accepted-update fraction per scheduled epoch (any source). Use
+    # this instead of the legacy moon-only valid_rate so landmarks_only
+    # isn't dragged to zero on a metric that doesn't apply.
+    accepted = [
         np.array([r["valid_rate"] for r in rows_by_cfg[c]
                   if np.isfinite(r["valid_rate"])], dtype=float)
         for c in cfgs
@@ -176,10 +174,11 @@ def _box_plot(
     fig.patch.set_facecolor(BG)
 
     palette = [VIOLET, AMBER, CYAN]
-    titles = ["Terminal Miss", "Pos Error at tc", "Moon-center Accept Rate"]
-    ylabels = ["miss_ekf [km]", "pos_err_tc [km]", "valid_rate (Moon)"]
+    titles = ["Terminal Miss", "Pos Error at tc", "Accepted-update fraction"]
+    ylabels = ["miss_ekf [km]", "pos_err_tc [km]",
+               "any update accepted / scheduled epoch"]
     log_y = [True, True, False]
-    series = [miss, pos, valid]
+    series = [miss, pos, accepted]
 
     for ax, ttl, yl, srs, lg in zip(axes, titles, ylabels, series, log_y):
         ax.set_facecolor(PANEL)
@@ -218,9 +217,10 @@ def _write_summary(
     out_txt.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "Landmark integration — per-config summary",
-        "=" * 70,
+        "=" * 90,
         f"{'config':>22}  {'n':>4}  {'miss_med':>10}  {'miss_p95':>10}  "
-        f"{'pos_med':>10}  {'NEES_med':>9}  {'NIS_med':>8}",
+        f"{'pos_med':>10}  {'NEES_med':>9}  "
+        f"{'NIS_all_med':>11}  {'vr_any':>7}  {'vr_lmk':>7}",
     ]
     for c in _CONFIGS:
         if c not in rows_by_cfg or not rows_by_cfg[c]:
@@ -229,7 +229,10 @@ def _write_summary(
         miss = np.array([r["miss_ekf"] for r in rows], dtype=float)
         pos  = np.array([r["pos_err_tc"] for r in rows], dtype=float)
         nees = np.array([r["nees_mean"] for r in rows], dtype=float)
-        nis  = np.array([r["nis_mean"]  for r in rows], dtype=float)
+        nis_all = np.array([r["nis_mean_all"] for r in rows], dtype=float)
+        vr_any = np.array([r["valid_rate"] for r in rows], dtype=float)
+        vr_lmk = np.array([r["valid_rate_landmarks"] for r in rows],
+                           dtype=float)
         miss = miss[np.isfinite(miss)]
         if units.truth == "cr3bp":
             miss = miss * _KM_PER_LU
@@ -238,7 +241,8 @@ def _write_summary(
             f"{c:>22}  {len(rows):4d}  "
             f"{np.median(miss):10.2f}  {np.percentile(miss,95):10.2f}  "
             f"{np.median(pos):10.2f}  {np.median(nees):9.2f}  "
-            f"{np.median(nis):8.2f}"
+            f"{np.nanmedian(nis_all):11.2f}  "
+            f"{np.nanmedian(vr_any):7.3f}  {np.nanmedian(vr_lmk):7.3f}"
         )
     out_txt.write_text("\n".join(lines))
 
@@ -259,6 +263,15 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--sigma-att-deg", type=float, default=0.0)
     p.add_argument("--out", type=str, default="results/mc/landmarks")
     p.add_argument("--base-seed", type=int, default=7)
+    p.add_argument("--n-workers", type=int, default=-1,
+                   help="Process-pool size; -1 = cpu_count(); 1 = serial.")
+    p.add_argument("--landmark-case", type=str, default="synthetic_6",
+                   choices=("synthetic_6", "synthetic_12",
+                            "catalog_craters_6", "catalog_craters_12"),
+                   help="Which landmark set to use. 'synthetic_*' is the "
+                        "geometric ±-axis set; 'catalog_craters_*' uses "
+                        "real lunar-crater lat/lon coordinates with "
+                        "identity assumed known.")
     add_truth_arg(p)
     return p.parse_args()
 
@@ -266,10 +279,10 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     apply_dark_theme()
-    run_case = load_midcourse_run_case(truth=args.truth)
     units = RunUnits.for_truth(args.truth)
 
-    landmarks_nd = _default_landmarks_nd(args.mu)
+    landmarks_nd = _landmarks_nd(args.mu, args.landmark_case)
+    landmarks_km = _landmark_offsets_km(args.landmark_case)
 
     config_kwargs = dict(
         mu=args.mu, t0=args.t0, tf=args.tf, tc=args.tc,
@@ -280,13 +293,16 @@ def main() -> None:
     )
 
     rows_by_cfg: dict[str, list[dict]] = {}
+    print(f"▸ landmark_case = {args.landmark_case}  "
+          f"({landmarks_nd.shape[0]} landmarks)")
     for cfg in _CONFIGS:
-        print(f"\n▸ config = {cfg}  n_seeds={args.n_seeds}")
+        print(f"\n▸ config = {cfg}  n_seeds={args.n_seeds}  workers={args.n_workers}")
         rows_by_cfg[cfg] = _run_config(
-            run_case=run_case, config=cfg, n_seeds=int(args.n_seeds),
+            truth=str(args.truth), config=cfg, n_seeds=int(args.n_seeds),
             base_seed=int(args.base_seed),
-            config_kwargs=config_kwargs, landmarks=landmarks_nd,
-            truth=args.truth,
+            config_kwargs=config_kwargs,
+            landmarks_nd=landmarks_nd, landmarks_km=landmarks_km,
+            n_workers=int(args.n_workers),
         )
 
     out_dir = apply_truth_suffix(repo_path(args.out), args.truth)
