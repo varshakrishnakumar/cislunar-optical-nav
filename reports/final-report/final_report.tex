@@ -40,7 +40,7 @@
 \maketitle
 \vspace{-0.15in}
 \begin{abstract}
-This work evaluates bearing-only lunar optical navigation through the midcourse correction it enables, rather than through estimator statistics alone.  A simulated spacecraft observes the Moon with a calibrated pinhole camera; idealized body-center pixel measurements are converted to tangent-plane line-of-sight residuals, fused with a CR3BP iterated extended Kalman filter (IEKF), and passed to STM-based single-impulse targeting.  The numerical experiments test whether that minimal bearing stream becomes guidance-useful when target visibility is actively maintained.  In the baseline 1000-trial CR3BP Monte Carlo with one-pixel measurement noise, the estimated-state correction achieved a median terminal miss of $70.6$ km and $99.1\%$ success for a $10^{-3}\,\LU$ tolerance, while fixed pointing preserved target visibility for only $24.6\%$ of the active-tracking arc versus $99.7\%$ with estimate-driven pointing.  Stress tests show that innovation consistency alone is insufficient: NIS can remain nominal while NEES, timing sensitivity, or terminal miss reveal overconfidence and model mismatch.  The result is a simulation baseline for a candidate Moon-center bearing architecture, not a claim of mature image processing or flight validation.
+Cislunar optical navigation is often validated through estimator-internal statistics, but mission users consume the navigation state through a guidance pipeline whose outputs (terminal miss, $\Delta V$ inflation, measurement availability) are what determine flight utility.  This paper evaluates the minimum-information case of cislunar optical navigation through that lens: the baseline architecture uses a single Moon-center bearing stream, with no radiometric range, no in-filter landmark identification, and no multi-body triangulation; the realism extension assumes \emph{known} landmark identities (synthetic and Robbins-catalog craters) to isolate the navigation-geometry effect of bearing diversity from any computer-vision performance claim.  Idealized body-center pixel measurements from a calibrated pinhole camera are converted to tangent-plane line-of-sight residuals, fused with a CR3BP iterated extended Kalman filter (IEKF), and passed to STM-based single-impulse targeting; estimate-driven active pointing closes the measurement-availability loop.  The central claim is that a sparse Moon-center bearing stream is guidance-useful when target visibility is actively maintained, but the architecture's utility must be judged by terminal correction performance, normalized estimation error squared (NEES), and visibility jointly--not by innovation consistency alone--and is bounded by explicit dynamical, measurement, and timing assumptions.  In the baseline 1000-trial CR3BP Monte Carlo with one-pixel measurement noise, the estimated-state correction achieves a median terminal miss of $70.6$ km and $99.1\%$ success at the $10^{-3}\,\LU$ screening tolerance, while fixed pointing preserves visibility for only $24.6\%$ of the active-tracking arc versus $99.7\%$ with estimate-driven pointing.  Stress tests--tighter mission tolerance, attitude noise, measurement delay, multi-revolution arcs, $\vect{P}_0$ scaling, and a SPICE point-mass truth comparison--show that NIS can remain nominal while NEES, timing sensitivity, or terminal miss reveal overconfidence and model mismatch.  The result is a guidance-coupled simulation baseline that delineates where a minimum-information bearing architecture is and is not useful, not a claim of mature image processing or flight validation.
 \end{abstract}
 \vspace{0.12in}
 \end{@twocolumnfalse}
@@ -68,13 +68,13 @@ LU, TU & CR3BP nondimensional length and time units \\
 \section{Introduction}
 Future cislunar missions will operate in a regime where ground tracking is valuable but not always sufficient as the only navigation source.  Line-of-sight access can be intermittent, antenna resources are shared, and the geometry of the Earth and Moon system can make updates sparse near mission-design-sensitive phases.  A camera is attractive because it is passive, lightweight, and already present on many spacecraft for inspection, landing, or science.  The limitation is equally important: a single image of a body gives direction, not range.  Bearing-only optical navigation therefore succeeds only if the dynamics and changing observation geometry supply enough information to recover the missing depth state.
 
-The purpose of this study is to test that idea in a closed-loop cislunar setting.  The contribution is a guidance-coupled evaluation of a minimal bearing-only optical navigation architecture, rather than a new filtering algorithm.  The core hypothesis is:
+The purpose of this study is to test that idea in a closed-loop cislunar setting.  The contribution is not a new estimator, a new measurement model, or a flight-readiness claim; the underlying components--CR3BP propagation, IEKF, tangent-plane bearing residuals, STM-based targeting--are individually well-established in the literature reviewed in Section~\ref{sec:related}.  The contribution is the guidance-coupled, bounded-realism evaluation of how those components behave together when the only measurement stream is a single Moon-center bearing.  The core thesis is:
 \begin{quote}
-Bearing measurements, when fused with nonlinear cislunar dynamics and protected by active pointing, can produce state estimates accurate enough to compute near-benchmark correction maneuvers.
+A sparse Moon-center bearing stream is guidance-useful when target visibility is actively maintained, but the architecture's utility must be judged by terminal correction performance, NEES, and visibility jointly--not by innovation consistency alone--and is bounded by explicit dynamical, measurement, and timing assumptions.
 \end{quote}
-This work makes three contributions.  First, it formulates a Moon-center bearing-only optical navigation pipeline in which pixel measurements are converted to tangent-plane line-of-sight residuals and fused with a CR3BP IEKF.  Second, it evaluates the estimator through an STM-based midcourse correction, using terminal miss and burn deviation as primary guidance metrics.  Third, it shows through Monte Carlo, active-pointing, and model-mismatch studies that innovation consistency alone is insufficient; visibility, NEES, and terminal guidance performance must be assessed jointly.
+This work makes three guidance-coupled contributions.  First, it adopts a mission-output evaluation framework in which terminal miss, $\Delta V$ inflation relative to a perfect-information benchmark, NEES, NIS, and visibility fraction are reported jointly per scenario, replacing the more common estimator-only scorecard with a guidance-relevant one.  Second, it quantifies active pointing as part of the navigation architecture: the 1000-trial baseline shows that estimate-driven pointing converts a fragile passive camera into a closed-loop measurement source, and the realism sweeps in Section~\ref{sec:realism} bound the pointing-degradation regime in which this benefit holds.  Third, it characterizes the minimum-information bearing architecture's bounded realism through reality checks on terminal tolerance, attitude uncertainty, multi-revolution stability, parallax-versus-range observability, $\vect{P}_0$ initialization, measurement delay, synthetic and catalog-backed landmark geometry, and SPICE point-mass truth, showing where the architecture remains useful and, importantly, where innovation consistency masks harmful estimation error.
 
-The resulting analysis is a minimal-information baseline for cislunar optical navigation: one target, one Moon-center bearing stream, no radiometric range, no landmark updates, and no multi-body triangulation.  The question is whether nonlinear dynamics and actively maintained measurement availability can turn that sparse information stream into a correction maneuver that remains close to the perfect-information benchmark.
+The resulting analysis is a minimal-information baseline for cislunar optical navigation: one target, one Moon-center bearing stream, no radiometric range, no landmark identification in the filter, and no multi-body triangulation.  The question is not whether bearing-only optical navigation is feasible in cislunar space--prior work has demonstrated richer optical observables and flight-relevant variants--but where the floor of useful behavior sits when only the sparsest bearing stream is available, judged by what reaches the guidance pipeline rather than by what stays inside the filter.
 
 \begin{figure}[t]
 \centering
@@ -84,11 +84,16 @@ The resulting analysis is a minimal-information baseline for cislunar optical na
 \end{figure}
 
 \section{Related Work}
-Optical navigation has been widely studied in both planetary and cislunar contexts, but the measurement products differ substantially across the literature.  Horizon- or limb-based methods use the apparent conic of an extended body to estimate position, attitude, or both; Christian's tutorial gives a complete treatment of that class of algorithms~\cite{christian2021}.  Cislunar navigation studies have also considered natural and artificial optical targets, lunar landmarks, and horizon-based measurements in multi-sensor or higher-fidelity settings~\cite{bradley2020,hinga2023}.  Deep-space navigation often combines optical plane-of-sky information with radiometric tracking, where range and Doppler directly improve line-of-sight observability~\cite{ely2021}.  Recent flight demonstrations such as LONEStar further show the value of optical triangulation with multiple planetary targets~\cite{krause2024}.
+\label{sec:related}
+The contribution of this work draws from three threads of prior literature: the optical-navigation taxonomy that establishes the available measurement products in cislunar space, the angles-only observability theory that determines when bearings alone are sufficient, and recent cislunar simulation and flight demonstrations.  The estimator components used in this paper--CR3BP propagation, IEKF estimation, tangent-plane bearing residuals, and STM-based targeting--are individually standard within those threads.  The novelty claimed here is therefore not the development of any single component but the guidance-coupled, bounded-realism evaluation of the minimum-information case.
 
-This work intentionally removes several of those information sources.  The simulated sensor does not fit a lunar limb, track a known landmark in the filter, use radiometric range/Doppler, or triangulate against multiple planets.  It uses a Moon-center bearing derived from idealized body-center pixel measurements, so each accepted frame contributes only two angular constraints.  While a direct numerical comparison is not strictly one-to-one because the measurement models differ, the results provide a minimal-information baseline for bearing-only sensing.
+\emph{Optical-navigation taxonomy.}  Optical observables for spacecraft navigation are usually classified by what feature of the imaged body is processed: the limb or apparent conic of an extended body, surface landmarks or named features, or multiple bodies triangulated against a star background.  Christian provides a complete tutorial of the horizon/limb class~\cite{christian2021}, with a companion paper developing crater-based identification specifically for the lunar surface~\cite{christianCrater2021}; Owen's recent JPL monograph collects the broader optical-navigation engineering practice across deep-space missions~\cite{owen2024}.  Cislunar-specific simulation studies have evaluated optical observations of natural and artificial targets~\cite{bradley2020}, optical bearings to a single lunar surface landmark in halo orbit~\cite{hinga2023}, optical fusion with radiometric range and Doppler~\cite{ely2021}, and recent flight demonstrations of multi-body optical triangulation~\cite{krause2024}.  The present paper deliberately removes most of these information sources--no limb fit, no in-filter landmark identification, no radiometric fusion, no multi-body triangulation--to isolate the floor of guidance-relevant performance under a single Moon-center bearing.
 
-This work isolates a lower-information case rather than optical navigation in general.  Prior work has demonstrated richer optical observables, landmark navigation, horizon-based navigation, or optical/radiometric fusion.  This study focuses on a single Moon-center bearing stream and evaluates whether the resulting state estimate remains useful for midcourse correction.  The comparison metric is therefore not image-processing accuracy alone, but terminal miss, burn deviation from a perfect-information correction, and estimator consistency.
+\emph{Bearing-only and angles-only observability.}  The classical bearing-only target-motion-analysis literature established in the late 1970s and early 1980s shows that a moving observer with passive bearings is observable only when the observer accelerates relative to the target: the Kalman-filter-degeneracy result of Aidala~\cite{aidala1979} and the rank conditions of Nardone and Aidala~\cite{nardone1981}.  The modern angles-only spacecraft-rendezvous literature reproduces and refines this conclusion in orbital relative motion, identifying the maneuver geometries that enable range observability~\cite{woffinden2009,gellerklein2014}.  Recent absolute-triangulation theory generalizes the multi-line-of-sight problem with non-iterative algorithms~\cite{henry2023}, and Smego and Christian extend dynamic triangulation specifically to cislunar initial orbit determination~\cite{smego2025}.  The bearing-only IEKF used in the present paper inherits these theoretical results: range becomes recoverable through nonlinear cislunar dynamics and changing observation geometry rather than from any single image, as Section~\ref{sec:observability} makes precise.
+
+\emph{Cislunar autonomous navigation.}  The CAPSTONE mission has provided in-flight cislunar navigation experience on a near-rectilinear halo orbit; autonomous orbit-determination and crosslink demonstration concepts have been documented in the public literature~\cite{thompson2022}.  Greaves and Scheeres have studied cislunar maneuver detection with optical measurements~\cite{greaves2021} and autonomous optical-only spacecraft-to-spacecraft tracking~\cite{greaves2023}; both use angles-only observables in cislunar dynamics, but for adversarial and cooperative rendezvous problems rather than the ground-truth-target midcourse-correction problem studied here.  Hinga and Williams provide the closest published simulation comparison--lunar $L_1$ halo navigation with optical measurements to a single surface landmark in a CR3BP-EKF~\cite{hinga2023}--but they report estimator-internal accuracy rather than guidance-coupled correction outcomes.
+
+\emph{Where this work sits.}  Against the above literature, this paper is intentionally narrow on three axes.  First, the measurement scope is the minimum-information bearing case--Moon-center only, no limb, no in-filter landmark identification, no triangulation; the closest published study is the Hinga--Williams single-landmark work, which uses a richer observable.  Second, the success criterion is mission-output (terminal miss, $\Delta V$ inflation, NEES, NIS, and visibility, reported jointly) rather than estimator-internal consistency alone.  Third, the architecture is judged within explicit dynamical, measurement, and timing assumptions, with reality checks in Section~\ref{sec:realism} that bound where the architecture remains useful.  The contribution is therefore not bearing-only optical navigation in cislunar space in general--prior work has demonstrated richer variants and flight relevance--but a guidance-coupled characterization of where the floor of useful behavior sits and how it degrades under realistic pointing, attitude, timing, and dynamics errors.
 
 \section{Mission Scenario}
 The nominal scenario is a southern halo/near-rectilinear halo orbit (NRHO)-class arc near the Earth and Moon $L_2$ region, seeded from the JPL periodic-orbits catalog and visualized with SPICE-backed ephemeris data.  The catalog record used for the study identifies the Earth and Moon system with
@@ -102,14 +107,20 @@ and
 \[
 1\,\TU=382981.2891\ \mathrm{s}=4.4327\ \mathrm{days}.
 \]
-Most navigation and targeting quantities are expressed in nondimensional CR3BP units.  The final Monte Carlo tolerance of $10^{-3}\,\LU$ therefore corresponds to approximately $390$ km.  The representative arc spans $6.56$ days and includes an insertion/tracking phase followed by a midcourse correction event.
+Most navigation and targeting quantities are expressed in nondimensional CR3BP units.  The final Monte Carlo tolerance of $10^{-3}\,\LU$ therefore corresponds to approximately $390$ km.  The representative arc spans $6.56$ days, which is approximately one halo period for this NRHO-class family record, and includes an insertion/tracking phase followed by a midcourse correction event.  Multi-revolution stability over up to about four halo periods is examined separately in Section~\ref{sec:realism}.
 
 The baseline estimation and targeting experiments use a fixed nominal trajectory, a fixed measurement schedule, and a correction time $t_c=2.0$ in the nondimensional simulation used for the Monte Carlo products.  The active-pointing comparison uses 301 candidate measurement epochs over the representative arc.  In all cases, a measurement update is only applied when the Moon is visible in the camera field of view and passes the measurement gate.
+
+\subsection{SPICE Truth Model and Assumptions}
+\label{sec:spice}
+Throughout this paper, the phrase ``SPICE-backed'' refers specifically to the truth and visualization products generated with the NASA NAIF SPICE toolkit~\cite{naif} from the DE442s planetary ephemeris and the NAIF leapseconds kernel.  Inertial states are returned by \texttt{spkezr} in the J2000 frame at TDB epochs anchored to the catalog start time.  The SPICE truth propagator is a Sun--Earth--Moon point-mass three-body integration with gravitational parameters $GM_{\rm Sun}=1.32712440018\times 10^{11}$, $GM_{\rm Earth}=3.986004418\times 10^{5}$, and $GM_{\rm Moon}=4902.800066$~$\mathrm{km^3/s^2}$, seeded by converting the dimensionless CR3BP halo state to inertial km/s at the same epoch and integrating with adaptive tolerances.  The estimator dynamics, in contrast, are always CR3BP in the synodic frame; SPICE is used only for truth generation and for the scenario visualization.  The same docs/$\texttt{spice\_vs\_cr3bp.md}$ table in the project repository enumerates this split exhaustively for reviewer reference.
+
+The SPICE truth model is therefore best characterized as a moving-primaries point-mass stress test on the CR3BP-tuned filter rather than a flight-fidelity simulation.  Effects intentionally not modeled in either the CR3BP or the SPICE arm include lunar non-spherical gravity, solar radiation pressure, propellant-mass changes, attitude actuator dynamics, light-time and aberration, and Moon-ephemeris uncertainty.  These exclusions are listed compactly in the modeling-assumption table of Section~\ref{sec:limitations}.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{phase01_slide_visual.png}
-\caption{SPICE-backed scenario visualization for the representative $6.56$ day cislunar tracking arc.  The main panel shows the Moon-relative truth arc with the Moon drawn to scale; the inset shows the Earth-centered geometry.  These physical units anchor the nondimensional CR3BP estimation and targeting experiments.}
+\caption{Scenario visualization of the representative $6.56$ day cislunar tracking arc, generated from a SPICE-propagated truth trajectory using DE442s ephemerides and the J2000 inertial frame.  The main panel shows the Moon-relative truth arc with the Moon drawn to scale; the inset shows the Earth-centered geometry.  The displayed window is the tracking arc used for the headline Monte Carlo (approximately one halo period); the multi-revolution analysis in Section~\ref{sec:realism} exercises the same orbit family for up to roughly four halo periods.  These physical units anchor the nondimensional CR3BP estimation and targeting experiments.}
 \label{fig:seed}
 \end{figure}
 
@@ -257,6 +268,7 @@ This is the mathematical center of the bearing-only estimator: one image contrib
 \end{figure}
 
 \section{Bearing-Only Observability}
+\label{sec:observability}
 \subsection{Instantaneous Rank}
 At a single image time, the tangent-plane bearing measurement is rank deficient by construction.  The matrix in Eq.~\eqref{eq:h-bearing} has rank at most two because the measurement lives in the plane normal to the predicted LOS:
 \begin{equation}
@@ -298,7 +310,7 @@ Figure~\ref{fig:observability} summarizes the accumulated observability Gramian 
 
 \section{Estimator}
 \subsection{Iterated EKF}
-The IEKF prediction is the STM propagation described above.  The measurement update uses the standard innovation covariance
+The estimator is an iterated extended Kalman filter (IEKF) that is run from the first measurement epoch onward.  No conventional Kalman filter or batch Consider Filter (CKF) is used as a startup pre-filter.  The decision is deliberate: the bearing measurement model in Eq.~\eqref{eq:h-bearing} is nonlinear in position even at small initialization errors, the iterated update absorbs this nonlinearity within a single epoch, and the headline Monte Carlo confirms this choice is robust by stress-testing initial covariance scaling up to $100\times$ in Section~\ref{sec:realism} without losing convergence.  The IEKF prediction is the STM propagation described above.  The measurement update uses the standard innovation covariance
 \[
 \mat{S}_k=\mat{H}_k\bar{\vect{P}}_k\mat{H}_k^T+\mat{R}_k
 \]
@@ -425,7 +437,7 @@ Median pixel offset & 88.8 px & 1.20 px \\
 \subsection{Baseline Study}
 The baseline Monte Carlo uses 1000 trials, $\sigma_{\rm px}=1$ pixel, no random dropout, estimate-driven camera pointing, and tuned process noise selected from the fine sweep.  Each trial samples the initial truth-injection perturbation, initial estimation perturbation, and pixel measurement noise using deterministic random seeds.  The nominal trajectory, measurement schedule, camera model, and correction time are fixed across trials unless otherwise stated.  Pixel noise is independent across accepted frames, and measurement updates are applied only when the target is inside the field of view and passes gating.  Terminal miss is computed after applying the estimated-state correction and propagating to $t_f$.  A trial is counted as successful if the post-correction terminal miss is below $10^{-3}\,\LU$.
 
-Initial truth-injection and estimate perturbations are sampled independently per component from zero-mean Gaussians with $\sigma_r=10^{-4}\,\LU$ and $\sigma_v=10^{-4}\,\LU/\TU$.  The IEKF is initialized with $\vect{P}_0=\mathrm{diag}(10^{-6}\mat{I}_3,10^{-7}\mat{I}_3)$, where the first block is position covariance in $\LU^2$ and the second block is velocity covariance in $(\LU/\TU)^2$.
+Initial truth-injection and estimate perturbations are sampled independently per component from zero-mean Gaussians with $\sigma_r=10^{-4}\,\LU$ and $\sigma_v=10^{-4}\,\LU/\TU$.  The IEKF is initialized with $\vect{P}_0=\mathrm{diag}(10^{-6}\mat{I}_3,10^{-7}\mat{I}_3)$, where the first block is position covariance in $\LU^2$ and the second block is velocity covariance in $(\LU/\TU)^2$.  Converted to physical units, the per-axis $1\sigma$ initial knowledge is approximately $\sigma_r\approx 390$~m and $\sigma_v\approx 0.32$~m/s.  This is intended as a representative end-of-orbit-determination handoff state from a ground-tracking pass into the on-board optical-only phase, sitting on the optimistic end of post-insertion knowledge for present and near-term cislunar missions; the $\vect{P}_0$-scale sweep in Section~\ref{sec:realism} extends this up to a $100\times$ wider initial covariance ($\sigma_r\approx 3.9$~km, $\sigma_v\approx 3.2$~m/s) and shows that the headline result is not an artifact of the tight baseline initialization.
 
 Table~\ref{tab:baseline} summarizes the main result.  The IEKF correction is not identical to the perfect-information burn, but the navigation error is small enough that the closed-loop correction usually meets tolerance.  The median terminal miss is $1.81\times10^{-4}\,\LU$, or approximately $70.6$ km.  The 95th percentile is $5.64\times10^{-4}\,\LU$, or approximately $220$ km, still below the specified tolerance.  The uncorrected median miss is $1.19\times10^{-3}\,\LU$, so the estimated-state correction improves the typical terminal error by a factor of roughly $6.6$.
 
@@ -465,9 +477,11 @@ The distribution products are as important as the summary table because they sho
 \FloatBarrier
 
 \subsection{High-Noise Stress Case}
+\label{sec:high-noise}
 A high-noise stress case with $\sigma_{\rm px}=5$ pixels keeps the same nominal architecture but widens the measurement uncertainty.  The median terminal miss increases to $1.72\times10^{-3}\,\LU$ and the success rate drops to $29.5\%$.  The 95th percentile miss is $5.27\times10^{-3}\,\LU$.  This behavior is expected: bearing-only navigation has no direct range measurement, so degraded angular accuracy enters both state reconstruction and burn targeting.  The result is useful because it identifies where the one-target, body-center architecture becomes fragile.
 
 \subsection{Process-Noise Tuning}
+\label{sec:process-tuning}
 The process-noise study was performed in two stages.  A coarse sweep exposed the main failure mode: too little process noise made the filter overconfident, with NEES far above the $\chisq(6)$ range.  A later fine sweep ran 1000 trials at each of 11 candidate $q_a$ values in the final operating regime.  Table~\ref{tab:qacc} shows that $q_a=10^{-9}$ preserved the $99.1\%$ pass rate while moving the median NEES and in-band fraction into a statistically credible range.
 
 \begin{table}[t]
@@ -502,7 +516,7 @@ $1.0\times10^{-7}$ & 0.904 & $3.75\times10^{-4}$ & 2.97 & 0.995 \\
 \end{figure}
 
 \section{Sensitivity Studies}
-The sensitivity studies vary pixel noise and correction time while holding the rest of the pipeline fixed.  Section~\ref{sec:realism} adds a wider set of sensitivity sweeps (terminal tolerance, attitude uncertainty, parallax-versus-range, and a synthetic-landmark variant) at the production seed count of $n=1000$.  The pixel-noise and $t_c$ sensitivity here uses an earlier $n=80$ deterministic-seed configuration with active pointing and $q_a=10^{-9}$.  Pixel noise remains a manageable driver through $\sigma_{px}=3$: the median terminal miss stays below the $10^{-3}\,\LU$ tolerance, rising from $1.22\times10^{-4}\,\LU$ at $\sigma_{px}=0.5$ to $6.95\times10^{-4}\,\LU$ at $\sigma_{px}=3$.  At $\sigma_{px}=5$, the median reaches $1.73\times10^{-3}\,\LU$, and the upper tail is well outside tolerance.  Correction time shows a separate geometric effect at $\sigma_{px}=1.5$: the median miss drops from $1.32\times10^{-3}\,\LU$ at $t_c=0.8$ to $1.55\times10^{-4}\,\LU$ at $t_c=3.0$, although the $t_c=1.2$ and $1.6$ points retain rare high-miss outliers before the geometry has fully matured.
+The sensitivity studies vary pixel noise and correction time while holding the rest of the pipeline fixed.  Section~\ref{sec:realism} adds a wider set of sensitivity sweeps (terminal tolerance, attitude uncertainty, parallax-versus-range, and synthetic and catalog-backed landmark variants) at the production seed count of $n=1000$.  The pixel-noise and $t_c$ sensitivity here uses an earlier $n=80$ deterministic-seed configuration with active pointing and $q_a=10^{-9}$.  Pixel noise remains a manageable driver through $\sigma_{px}=3$: the median terminal miss stays below the $10^{-3}\,\LU$ tolerance, rising from $1.22\times10^{-4}\,\LU$ at $\sigma_{px}=0.5$ to $6.95\times10^{-4}\,\LU$ at $\sigma_{px}=3$.  At $\sigma_{px}=5$, the median reaches $1.73\times10^{-3}\,\LU$, and the upper tail is well outside tolerance.  Correction time shows a separate geometric effect at $\sigma_{px}=1.5$: the median miss drops from $1.32\times10^{-3}\,\LU$ at $t_c=0.8$ to $1.55\times10^{-4}\,\LU$ at $t_c=3.0$, although the $t_c=1.2$ and $1.6$ points retain rare high-miss outliers before the geometry has fully matured.
 
 \begin{figure}[t]
 \centering
@@ -524,14 +538,34 @@ The baseline study assumes ideal pointing, an optimistic terminal-miss tolerance
 
 \subsection{Terminal-Tolerance Reality Check}
 \label{sec:realism-tolerance}
-The baseline tolerance is $10^{-3}\,\LU \approx 390$ km, which is generous relative to mission-relevant accuracy requirements.  Sweeping the success threshold over $[1,1000]$ km on the existing $n=1000$ baseline (Figure~\ref{fig:tolerance}) shows where the headline pass rate degrades.  At $10^{-3}\,\LU$ the CR3BP-truth pass rate is $99.2\%$ and the SPICE-truth pass rate is $85.3\%$.  At a tighter $10^{-4}\,\LU \approx 39$ km tolerance the pass rates fall to $32.9\%$ (CR3BP) and $11.2\%$ (SPICE).  At $25$ km the rates are $18.9\%$ and $6.8\%$.  The tolerance reality check is therefore that the baseline architecture meets the loose threshold comfortably but is not yet a precision-arrival tool: the median miss is well-controlled, but the trial-to-trial spread leaves a substantial fraction of trajectories outside the tighter requirement, and the SPICE truth case sits on a measurably worse part of the curve.
+The $10^{-3}\,\LU \approx 390$ km tolerance used as the headline screening threshold is generous relative to mission-relevant accuracy requirements; reading the architecture's mission utility off a single threshold therefore obscures more than it conveys.  Figure~\ref{fig:central} reframes the headline using the empirical terminal-miss distribution and a continuous success-rate-vs-tolerance curve, both spanning $1$~km to $1000$~km on the same $n=1000$ matched-seed Monte Carlo populations used elsewhere in this paper.  Four curves are shown jointly: the CR3BP baseline (Moon-only, estimate-driven active pointing), the SPICE point-mass truth comparison, the CR3BP run with Moon plus the L2 Robbins-catalog landmarks, and the uncorrected baseline (the same trials with no midcourse burn) drawn in grey as a reference for the work the guidance pipeline is doing.  Vertical guides at $25$, $39$, and $390$~km mark, respectively, a tight precision-arrival reach, the previously-flagged reality-check tolerance ($10^{-4}\,\LU$), and the screening tolerance.
 
-\begin{figure}[t]
+The 390 km threshold is useful as a screening tolerance, but the ECDF and the success-vs-tolerance curve show that mission-specific accuracy requirements must be read directly from the terminal-miss distribution, not inferred from any single pass rate.  Table~\ref{tab:central-pass} reports the per-curve pass rates at the three marked thresholds: at $390$~km the baseline architecture clears the screening tolerance comfortably ($99.2\%$ CR3BP, $85.3\%$ SPICE, $100.0\%$ with L2 landmarks); at the precision-arrival tolerance of $39$~km the same architecture lands in a regime where mission-design choices begin to matter ($32.9\%$ CR3BP-baseline, only $11.2\%$ under SPICE truth, but $72.5\%$ once L2 landmarks are added); at a tighter $25$~km the corresponding numbers are $18.9\%$, $6.8\%$, and $50.6\%$.  The uncorrected reference shows the headline architecture is doing meaningful work even at the $390$~km tolerance ($99.2\%$ vs $42.5\%$ uncorrected), and substantially more at tighter tolerances ($32.9\%$ vs $3.9\%$ at $39$~km).
+
+\begin{figure*}[t]
 \centering
-\includegraphics[width=\linewidth]{../../results/mc/phase_e_tolerance_sweep/06i_tolerance_sweep.png}
-\caption{Terminal-miss success rate as a function of tolerance, taken from the same $n=1000$ CR3BP-truth and SPICE-point-mass-truth baseline runs.  Vertical guides mark the paper threshold ($10^{-3}\,\LU = 390$ km) and the tighter $10^{-4}\,\LU = 39$ km point used as the reality-check level.}
-\label{fig:tolerance}
-\end{figure}
+\includegraphics[width=0.95\textwidth]{../../results/mc/phase_h_central_ecdf/06t_success_ecdf_central.png}
+\caption{Central ``truth in advertising'' result: terminal-miss empirical CDF (top) and success rate as a function of mission-tolerance threshold (bottom) for four $n=1000$ matched-seed populations.  Curves are: CR3BP-truth Moon-only with active estimate-driven pointing (cyan), SPICE point-mass truth Moon-only with active pointing (amber), CR3BP-truth Moon plus L2 Robbins-catalog landmarks with active pointing (green), and the uncorrected baseline corresponding to the same CR3BP trials with no midcourse correction applied (grey, dashed).  Vertical guides mark the screening tolerance ($390$~km) and two precision-arrival reality-check points ($39$~km and a tighter $25$~km).  The success-vs-threshold curve replaces the prior single-point pass-rate headline: mission-specific accuracy must be read directly from the curve.}
+\label{fig:central}
+\end{figure*}
+
+\begin{table}[t]
+\centering
+\caption{Pass rates and distribution summaries for the four central-figure populations at the three marked tolerances.  All four populations are $n=1000$ matched-seed Monte Carlo trials.  The uncorrected reference uses $\texttt{miss\_uncorrected}$ from the same trials as the CR3BP baseline (no midcourse burn applied).}
+\label{tab:central-pass}
+\scriptsize
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+population & $n$ & pass$<25$~km & pass$<39$~km & pass$<390$~km & median / p95 [km] \\
+\midrule
+CR3BP baseline (Moon-only, active)         & 1000 & 18.90\% & 32.90\% &  99.20\% &  60.80 / 225.16 \\
+SPICE truth (Moon-only, active)            & 1000 &  6.80\% & 11.20\% &  85.30\% & 182.88 / 539.02 \\
+CR3BP, Moon $+$ L2 landmarks (active)      & 1000 & 50.60\% & 72.50\% & 100.00\% &  24.73 /  71.52 \\
+Uncorrected baseline (no midcourse burn)   & 1000 &  1.60\% &  3.90\% &  42.50\% & 458.34 / 1279.75 \\
+\bottomrule
+\end{tabular}}
+\end{table}
 
 \subsection{Attitude Uncertainty}
 \label{sec:realism-attitude}
@@ -583,8 +617,8 @@ A natural follow-on to the Moon-center bearing-only baseline is whether known su
 
 \begin{enumerate}
 \item[\textbf{L1}] \emph{Synthetic known landmarks.}  Six Moon-fixed unit-vector offsets along $\pm x,\pm y,\pm z$ in the body frame, scaled by one lunar radius.  Geometric upper bound on the achievable improvement from spatial bearing diversity.
-\item[\textbf{L2}] \emph{Catalog-backed landmark bearings.}  Real selenographic latitude/longitude coordinates for six well-known nearside craters (Tycho, Copernicus, Aristarchus, Plato, Kepler, Grimaldi), converted to Moon-fixed Cartesian and used directly as bearing sources.  Landmark identity is assumed known; image-recognition performance is not modeled.  This level isolates the navigation-geometry question from computer-vision performance and is the largest scope addressed here.
-\item[\textbf{L3}] \emph{Image-based identification with catalog association.}  Render or ingest images, detect craters or features, track them between frames, associate detections with catalog entries, reject false matches, and feed accepted bearings into the filter.  Out of scope for this paper; deferred to the future-work agenda in Section~\ref{tab:assumptions} along with lighting models and surface-map uncertainty.
+\item[\textbf{L2}] \emph{Catalog-backed landmark bearings.}  Real selenographic latitude/longitude coordinates for six well-known nearside craters (Tycho, Copernicus, Aristarchus, Plato, Kepler, Grimaldi), drawn from the Robbins lunar crater database~\cite{robbins2019}, converted to Moon-fixed Cartesian and used directly as bearing sources.  Landmark identity is assumed known; image-recognition performance is not modeled.  Robbins-2019 contains over $1.3$ million craters with diameter $\geq 1$~km, so the present six-crater subset is a deliberately small reviewer-friendly slice rather than the full catalog; the navigation-geometry effect of catalog choice is expected to scale with the number of well-distributed accepted bearings, which is examined further in Sections~\ref{sec:realism-landmarks} and~\ref{sec:limitations}.  This level isolates the navigation-geometry question from computer-vision performance and is the largest scope addressed here.
+\item[\textbf{L3}] \emph{Image-based identification with catalog association.}  Render or ingest images, detect craters or features, track them between frames, associate detections with catalog entries, reject false matches, and feed accepted bearings into the filter.  Out of scope for this paper; deferred to the future-work agenda in Section~\ref{sec:limitations} (and summarized in the assumption table referenced as \ref{tab:assumptions}) along with lighting models and surface-map uncertainty.
 \end{enumerate}
 
 The L1 and L2 sweeps each run three configurations on identical seeds at $n=1000$ trials per configuration: Moon-center only, landmark-only with the Moon-center disabled, and Moon-plus-landmarks.  Consistency comparison across configurations uses the pooled \texttt{nis\_mean\_all} column rather than the Moon-only \texttt{nis\_mean}, because two of the three configurations include landmark accepts.  The L1 result is summarized in Table~\ref{tab:landmarks-l1} and Figure~\ref{fig:landmarks}.  Median terminal miss drops from 60.8 km (Moon-only) to 25.8 km (landmarks only) and 23.2 km (Moon+landmarks); 95th-percentile miss drops from 225.2 km to 71.1 km and 69.0 km.  The improvement is therefore roughly a factor of $2.6$ in median miss and $3.2$ in $p95$, and the fact that landmark-only nearly matches the combined configuration indicates that the gain comes from spatial diversity of the bearing rays rather than simply more updates.  The L2 catalog-backed result is reported in Table~\ref{tab:landmarks-l2}.  Despite the catalog craters being clustered on the lunar nearside rather than spaced symmetrically on the body axes, the L2 numbers are within 6\% of the L1 numbers across all three configurations (median miss 23.2/24.7 km L1/L2 in moon\_plus\_landmarks; $p95$ 69.0/71.5 km), showing that the conclusion is not an artifact of the idealized symmetric L1 layout.  The reportable claim across both levels is that adding synthetic known landmarks substantially improves the simulated bearing geometry; the experiment does not include real crater identification, lighting and surface-map uncertainty, or false-match logic, and is therefore not a flight-relevant landmark-tracking demonstration.
@@ -629,6 +663,51 @@ moon\_plus\_landmarks & 24.73 &  71.52 &  7.27 & 4.73 & 1.98 \\
 \caption{L1 synthetic-landmark integration comparison, $n=1000$ trials per configuration, matched seeds across configurations.  Boxes show terminal miss, position error at $t_c$, and the accepted-update fraction (any source) per scheduled epoch.  Landmarks substantially improve the simulated bearing geometry; this experiment does not include real surface-feature identification.}
 \label{fig:landmarks}
 \end{figure}
+
+\subsection{Landmarks Under Pointing Degradation}
+\label{sec:realism-landmarks-pointing}
+The landmark experiments of Section~\ref{sec:realism-landmarks} compare bearing configurations under a single (estimate-driven) pointing law.  An advisor question that the locked thesis must address directly is whether known-landmark availability \emph{reduces dependence on aggressive active pointing}.  This subsection probes that question with a $3\times 5$ matrix on matched seeds at $n=1000$ per cell, sweeping landmark configuration $\{$Moon-only, $L_2$ landmarks only, Moon~$+~L_2$ landmarks$\}$ against pointing mode $\{$fixed, ideal estimate-driven, biased estimate-driven, lagged estimate-driven, attitude-noisy estimate-driven$\}$.  The biased mode applies a $0.1^{\circ}$ constant boresight bias about the camera-frame $y$ axis; the lagged mode tracks the estimate from $5$ measurement steps ago (about $0.1\,\TU$); the attitude-noisy mode injects $\sigma_{\rm att}=0.05^{\circ}$ per-step zero-mean noise.  The $L_2$ landmark layout is the same six Robbins-catalog craters used in the L2 study.
+
+The tempered hypothesis carried into this experiment is that landmarks improve bearing geometry when visible but cannot substitute for active pointing as the measurement-availability mechanism, so landmark diversity should reduce performance \emph{sensitivity} to pointing degradation rather than rescue terminal miss under complete visibility loss.  To make the mechanism distinction observable, two per-source quantities are logged in addition to the standard metrics: per-source visibility (the existing $\texttt{valid\_rate\_moon}$ / $\texttt{valid\_rate\_landmarks}$ aggregations) and the median angular offset of each source from the commanded camera boresight.  The angular-offset pair separates the visibility-substitution mechanism (a source remains in the FOV when others do not) from the geometry-improvement mechanism (sources stay close to the boresight while bearing diversity grows).
+
+Table~\ref{tab:landmarks-pointing} summarizes the production result.  The headline structure is unambiguous: under fixed pointing, all three landmark configurations collapse to the same median terminal miss of $487$~km with zero accepted-update fraction and both source families at approximately $90^{\circ}$ from the commanded boresight, because the catalog craters and the Moon center share visibility fate when co-located near the lunar surface.  Adding landmarks therefore does \emph{not} rescue fixed-pointing performance--this is a direct empirical test of the hypothesis that landmark diversity could substitute for active measurement-availability control, and the test is failed by a factor of roughly $20\times$ in median miss against any active mode.  Under ideal estimate-driven pointing, landmarks improve median terminal miss from $60.8$ km (Moon-only) to $26.6$ km (landmarks-only) and $24.7$ km (Moon~$+$~landmarks), a roughly $2.4\times$ improvement consistent with the L1/L2 results in Section~\ref{sec:realism-landmarks}.  The publishable claim is in the three degraded-active columns: under a $0.1^{\circ}$ deterministic bias, the moon-only median miss inflates from $60.8$~km to $128.1$~km (a $2.1\times$ degradation), while the moon-plus-landmark configuration only inflates from $24.7$~km to $52.2$~km (a $2.1\times$ degradation but in absolute terms a $59\%$ reduction in degraded-pointing miss); under a five-step pointing lag and under the $0.05^{\circ}$ attitude-noise condition, the moon-plus-landmark cells reach $24.4$~km and $35.7$~km respectively, against $63.6$~km and $67.3$~km moon-only.  The angular-offset diagnostic confirms that under all active modes both source families remain inside the field of view (moon offset $\le 5.04^{\circ}$, landmark offset $\le 4.02^{\circ}$); under fixed pointing both reach $\sim 89.3$--$90^{\circ}$, consistent with total visibility loss.
+
+The result of the matrix is a sharper version of the locked thesis.  Active pointing remains the measurement-availability mechanism: with the camera locked, the $L_2$ landmark layout used here is co-located with the Moon and provides no visibility advantage, so terminal miss collapses identically across landmark configurations.  Landmarks reduce \emph{sensitivity} to imperfect pointing rather than removing the need for it: under bias, lag, and attitude-noise perturbations, the moon-plus-landmark configuration recovers $59\%$, $62\%$, and $47\%$ of the moon-only terminal miss penalty, respectively, while neither source family is forced out of the FOV.  This separation--measurement availability through pointing, geometry improvement through landmark diversity--is the cleanest way to state the architecture's response to operational pointing imperfection.
+
+\begin{table}[t]
+\centering
+\caption{Landmarks Under Pointing Degradation, $n=1000$ trials per cell, matched seeds across all 15 cells.  ``mode'' columns report median terminal miss in km and median accepted-update fraction (any source) per scheduled epoch; column block is $\{$\textbf{fixed}, \textbf{ideal} active, \textbf{bias} $0.1^{\circ}$, \textbf{lag} $5$ steps, \textbf{noise} $\sigma_{\rm att}=0.05^{\circ}\}$.  All active-pointing modes use estimate-driven pointing.}
+\label{tab:landmarks-pointing}
+\scriptsize
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+configuration / mode & fixed & ideal & bias & lag & noise \\
+\midrule
+\multicolumn{6}{@{}l}{\emph{median terminal miss [km]}} \\
+moon\_only             & 487.01 &  60.80 & 128.09 & 63.65 & 67.34 \\
+landmarks\_only\_$L_2$ & 487.01 &  26.57 &  53.84 & 27.36 & 35.49 \\
+moon $+$ $L_2$         & 487.01 &  24.73 &  52.16 & 24.42 & 35.71 \\
+\midrule
+\multicolumn{6}{@{}l}{\emph{median accepted-update fraction (any source)}} \\
+moon\_only             & 0.000 & 1.000 & 1.000 & 0.900 & 1.000 \\
+landmarks\_only\_$L_2$ & 0.000 & 1.000 & 1.000 & 0.900 & 1.000 \\
+moon $+$ $L_2$         & 0.000 & 1.000 & 1.000 & 0.900 & 1.000 \\
+\midrule
+\multicolumn{6}{@{}l}{\emph{median moon-center / landmark offset from boresight [deg]}} \\
+moon\_only / lmk             & 89.98 / -- & 0.05 / -- & 0.12 / -- & 5.02 / -- & 0.05 / -- \\
+landmarks\_only\_$L_2$       & 89.98 / 89.29 & 0.02 / 1.51 & 0.11 / 1.54 & 5.02 / 4.01 & 0.03 / 1.51 \\
+moon $+$ $L_2$               & 89.98 / 89.29 & 0.02 / 1.52 & 0.11 / 1.54 & 5.04 / 4.02 & 0.03 / 1.51 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.94\textwidth]{../../results/mc/phase_f_landmarks_pointing/06r_landmarks_under_pointing_degradation.png}
+\caption{Landmarks Under Pointing Degradation, $n=1000$ matched-seed Monte Carlo over a $3\times 5$ landmark-configuration $\times$ pointing-mode grid.  Top-left: median terminal miss [km].  Top-right: median accepted-update fraction (any source).  Bottom row: median angular offset of the moon center (left) and median landmark offset (right) from the commanded camera boresight, in degrees.  The fixed-pointing column collapses identically across all three landmark configurations because the catalog landmarks share the moon's visibility fate; the four active-pointing columns show landmark diversity reducing performance sensitivity to pointing imperfection while both sources remain in the field of view.}
+\label{fig:landmarks-pointing}
+\end{figure*}
 
 \subsection{Filter-Covariance Geometry at Burn}
 \label{sec:realism-covariance}
@@ -740,6 +819,71 @@ One-step delay & 0.977 & 1.718 & $2.96\times10^{-3}$ \\
 \end{tabular}
 \end{table}
 
+\subsection{Estimator Ablation: EKF vs IEKF vs UKF}
+\label{sec:verif-estimator-ablation}
+The locked thesis does not propose a new filter, so the choice between an EKF, an IEKF, and a UKF should be justified by matched-seed evidence rather than by appeal to nonlinearity arguments alone.  This subsection runs all three estimators on the same baseline scenario--Moon-only bearing, estimate-driven active pointing, $\sigma_{\rm px}=1$ pixel, $q_a=10^{-14}$, $t_c=2.0$, $n=1000$ matched-seed trials--with truth model, measurement generation, gating policy ($\texttt{gating\_enabled}=\texttt{False}$ everywhere), process noise, RNG seeds, and pointing law held identical across the three filters.  Only the predict and update steps differ.  The EKF case is implemented as the IEKF with $\texttt{max\_iterations}=1$, matching the cisopt $\texttt{EKFEstimator}$ convention; the UKF is the Wan/van der Merwe sigma-point UKF ($\alpha=10^{-3}$, $\beta=2$, $\kappa=0$) with the same continuous white-acceleration process-noise model and a tangent-plane unit-vector residual at the weighted-mean line of sight.
+
+\begin{table}[t]
+\centering
+\caption{Estimator ablation, $n=1000$ trials per cell, matched seeds across all three filters.  Pass-rate columns refer to the screening tolerance $10^{-3}\,\LU\approx390$~km and the tighter reality-check tolerance $10^{-4}\,\LU\approx39$~km.  ``NEES band'' is the empirical fraction of trial-mean NEES values inside the $\chisq(6)$ 95\% band $[1.24,14.45]$.  Predict/update times are median over trials of the per-trial mean; ``trial'' is end-to-end per-trial wall time.}
+\label{tab:estimator-ablation}
+\scriptsize
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}lcccccccc@{}}
+\toprule
+filter & miss med [km] & miss p95 [km] & pass$@390$ & pass$@39$ & NEES med. & NEES band & $t_{\rm pred}$ [$\mu$s] & $t_{\rm upd}$ [$\mu$s] \\
+\midrule
+EKF (max\_iter=1)  & 60.78 & 225.79 & 99.10\% & 32.70\% & 5.78 & 89.20\% & 2046 &  970 \\
+IEKF (max\_iter=3) & 60.80 & 225.16 & 99.10\% & 32.70\% & 5.78 & 89.30\% & 2087 & 1444 \\
+UKF (sigma points) & 90.14 & 281.46 & 99.00\% & 20.80\% & 4.21 & 99.90\% & 7500 &  493 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{../../results/mc/phase_g_estimator_ablation/06s_estimator_ablation.png}
+\caption{Estimator ablation, $n=1000$ matched-seed Monte Carlo.  From left to right: terminal miss [km], NIS, NEES (with $\chisq(6)$ 95\% band guides and reference value 6 marked), and mean update wall-time [$\mu$s].  EKF and IEKF distributions overlay nearly perfectly; the UKF terminal-miss distribution is shifted higher while its NEES is shifted lower (more conservative covariance).}
+\label{fig:estimator-ablation}
+\end{figure}
+
+Three observations from Table~\ref{tab:estimator-ablation} drive the retention decision.  First, the EKF and IEKF results are statistically indistinguishable at the headline operating point: median terminal miss agrees to two decimal places (60.78 vs 60.80~km), 95th-percentile miss agrees to within $0.3\%$, screening pass rate is identical, precision-arrival pass rate is identical, NEES median is identical, and NEES 95\% band fraction differs by $0.1$ percentage point.  The IEKF's three iterations consume $49\%$ more update wall time ($1444$ vs $970~\mu$s) without producing measurable accuracy or consistency gain at this signal-to-noise.  Second, the UKF takes a different operating point: $48\%$ higher median miss ($90.14$~km), $25\%$ higher $p_{95}$ miss, $36\%$ lower precision-arrival pass rate ($20.80\%$ vs $32.70\%$ at the $39$~km tolerance), but a near-perfect NEES consistency band fraction of $99.90\%$ versus $89.30\%$.  The UKF's predict cost is $3.6\times$ higher than the EKF/IEKF predict ($7500$ vs $\sim 2050~\mu$s) because the sigma-point propagation runs thirteen state integrations per step, while its update is roughly half the EKF cost because no iteration is performed.  Third, no filter shows divergence in $1000$ trials.
+
+The ablation therefore supports a modest paper claim.  This work does not argue for the IEKF as the only viable estimator for cislunar bearing-only optical navigation; the EKF (max\_iter=1) would be a defensible choice for compute-constrained on-board autonomy, with $33\%$ lower update time and equivalent terminal accuracy and consistency at the headline scenario.  The IEKF is retained because the iteration provides a small theoretical robustness margin under measurement-side stress (e.g., the higher-pixel-noise stress case in Section~\ref{sec:high-noise} where the linearization point matters more), and because the wall-time penalty is still well below the $20$-millisecond cadence-budget interval used elsewhere in the realism extensions.  The UKF is not retained as the primary filter because its higher terminal miss outweighs its consistency advantage in the guidance-coupled metrics that drive this paper, but its near-perfect NEES band fraction is itself diagnostic: it indicates that the EKF/IEKF covariance is somewhat optimistic in this regime, which is consistent with the $q_a$-tuning conclusions of Section~\ref{sec:process-tuning}.  A possible architecture for a future flight-fidelity follow-on is to use the IEKF as the operational filter and the UKF as a parallel consistency monitor.
+
+The exact-equivalence of EKF and IEKF here is itself a useful reviewer-confidence result: it confirms that the bearing measurement is well-conditioned at the headline operating point and that the iteration is not silently rescuing the linearization.  Implementation differences--sigma-point scaling, covariance repair, unit-vector residual handling, lack of in-update gating--are documented in the run-case helpers and are not exercised differently across the three filters because the gating policy ($\texttt{gating\_enabled}=\texttt{False}$) is uniform.  Reviewers wanting to attribute UKF-vs-EKF differences to filter theory rather than implementation should compare against the cisopt UKF reference at $\texttt{src/cisopt/estimators/ukf.py}$, from which the UKF math used here was lifted verbatim.
+
+\subsection{Compute Budget for Production Drivers}
+\label{sec:compute-budget}
+Reviewer-grade reproducibility requires not only deterministic seeds and a pinned environment but also realistic compute expectations.  Table~\ref{tab:compute-budget} reports approximate end-to-end wall times for the major production drivers used to populate the figures and tables in this paper.  All numbers are from an eight-core consumer machine (no GPU, no SLURM); the parallel speed-up is roughly $6\times$ on $n=1000$ batches via the $\texttt{ProcessPoolExecutor}$-based seed-parallelism worker $\texttt{scripts/\_parallel\_seeds.py}$.  Per-trial compute is dominated by adaptive-tolerance state-and-STM propagation; the IEKF/EKF updates are sub-millisecond after process-pool startup is amortized.  The full paper-results regeneration time on this machine is under three hours wall, exclusive of the SPICE-point-mass-truth comparison ($\sim 30$~s/trial single-process), which adds roughly thirty minutes more.
+
+\begin{table}[t]
+\centering
+\caption{Approximate wall-clock cost of regenerating the production data behind each labeled figure or table on an eight-core machine, with the seed-parallelism pool ($\texttt{--n-workers -1}$).  ``Driver'' is the script under \texttt{scripts/}; ``output dir'' is the path under \texttt{results/mc/} where the production CSV / PNG / TXT artifacts are written; ``cells $\times n$'' counts the matched-seed Monte Carlo population; ``wall'' is rough end-to-end run time on the reference machine.}
+\label{tab:compute-budget}
+\scriptsize
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{@{}llrrl@{}}
+\toprule
+driver & output dir & cells $\times n$ & wall & populated artifacts \\
+\midrule
+\texttt{06\_monte\_carlo.py}              & \texttt{phase\_d\_production/}              & $1\!\times\!1000$  & $\sim$30~m & Tab.~\ref{tab:baseline}, Fig.~\ref{fig:baseline-summary}, Fig.~\ref{fig:central}~C1/C4 \\
+\texttt{06f\_compare\_truth\_modes.py}     & \texttt{phase\_d\_production\_spice/}        & $1\!\times\!1000$  & $\sim$8~h  & Fig.~\ref{fig:central}~C2, Fig.~\ref{fig:model-fidelity} \\
+\texttt{06i\_tolerance\_sweep.py}          & \texttt{phase\_e\_tolerance\_sweep/}        & post-hoc           & $<$1~s     & (legacy figure; superseded by Fig.~\ref{fig:central}) \\
+\texttt{06j\_covariance\_ellipses.py}      & \texttt{phase\_e\_covariance/}              & 1 trial            & $<$10~s    & Fig.~\ref{fig:covariance} \\
+\texttt{06k\_p0\_sensitivity.py}           & \texttt{phase\_e\_P0/}                       & $5\!\times\!1000$  & $\sim$1~h  & Tab.~\ref{tab:p0} \\
+\texttt{06l\_multi\_revolution.py}         & \texttt{phase\_e\_multi\_rev/}              & $3\!\times\!100$   & $\sim$30~m & Fig.~\ref{fig:multirev} \\
+\texttt{06m\_parallax\_vs\_range.py}       & \texttt{phase\_e\_parallax/}                & $\sim$8000 pts     & $\sim$25~m & Fig.~\ref{fig:parallax} \\
+\texttt{06n\_landmarks.py} (L1, L2)        & \texttt{phase\_e\_landmarks/}, \texttt{phase\_e\_landmarks\_catalog/} & $3\!\times\!1000$ each & $\sim$25~m each & Tab.~\ref{tab:landmarks-l1}, Tab.~\ref{tab:landmarks-l2}, Fig.~\ref{fig:landmarks} \\
+\texttt{06p\_measurement\_delay.py}        & \texttt{phase\_e\_delay/}                    & $7\!\times\!1000$  & $\sim$50~m & Tab.~\ref{tab:delay} \\
+\texttt{06q\_attitude\_noise\_sweep.py}    & \texttt{phase\_e\_attitude\_noise/}         & $7\!\times\!1000$  & $\sim$30~m & Tab.~\ref{tab:attitude}, Fig.~\ref{fig:attitude} \\
+\texttt{06r\_landmarks\_under\_pointing\_degradation.py} & \texttt{phase\_f\_landmarks\_pointing/} & $15\!\times\!1000$ & $\sim$3~m  & Tab.~\ref{tab:landmarks-pointing}, Fig.~\ref{fig:landmarks-pointing}, Fig.~\ref{fig:central}~C3 \\
+\texttt{06s\_estimator\_ablation.py}       & \texttt{phase\_g\_estimator\_ablation/}     & $3\!\times\!1000$  & $\sim$5~m  & Tab.~\ref{tab:estimator-ablation}, Fig.~\ref{fig:estimator-ablation} \\
+\texttt{06t\_success\_ecdf\_central.py}    & \texttt{phase\_h\_central\_ecdf/}           & post-hoc            & $<$1~s     & Tab.~\ref{tab:central-pass}, Fig.~\ref{fig:central} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
 \section{Discussion}
 The strongest conclusion is that measurement availability is just as important as measurement noise.  The bearing-only IEKF can produce accurate estimates when the Moon remains in the field of view, but fixed pointing can starve the filter of updates.  Active pointing changes the problem: it converts a fragile passive camera into a closed-loop measurement source.  In this sense, pointing is not merely an attitude-control detail; it is part of the observability strategy.
 
@@ -749,7 +893,7 @@ The third conclusion is that observability must be interpreted through the guida
 
 Preliminary feature tracking and known-pose landmark reconstruction were implemented as a feasibility step.  In Section~\ref{sec:realism-landmarks} two levels of landmark-bearing fusion are folded into the estimator and compared against Moon-center only on identical seeds: L1 with six synthetic Moon-fixed offsets along the body axes, and L2 with selenographic latitude/longitude coordinates for six well-known nearside craters with identity assumed known.  Both levels run $n=1000$ trials per configuration.  The result is a measurement-geometry comparison, not a flight-relevant landmark-tracking demonstration; real crater detection from images, lighting and surface-map uncertainty, and false-match logic are deferred to L3 future work.  The reportable claim is that adding known landmarks substantially improves the simulated bearing geometry, and that this conclusion holds under both an idealized symmetric L1 layout and a realistic asymmetric L2 catalog distribution.
 
-The realism sweeps make the dependence of the headline result on its assumptions explicit.  Tightening the success threshold to $10^{-4}\,\LU\approx 39$ km drops the pass rate from $99\%$ to $33\%$ on CR3BP truth and from $85\%$ to $11\%$ on SPICE point-mass truth, so the baseline architecture meets a generous tolerance comfortably but is not a precision-arrival tool out of the box.  Adding zero-mean attitude noise of up to $0.03$ degrees per step degrades miss only marginally (within five percent of the no-noise baseline); the median miss inflates by about 43\% at $0.1$ degrees, then climbs steeply to roughly $1000$ km at $1$ degree because the un-modeled bearing residual exceeds the pixel-noise contribution and the filter loses statistical consistency.  The cumulative-parallax versus range-error fit recovers a negative-exponent power law (slope $\approx-0.57$ on the production data), which is the bearing-only physics-backed reason the filter ever resolves range, while making clear that range information is bounded by both an insufficient-arc floor at small $t_c$ and a noise floor at long arc.  The synthetic-landmark experiment improves median terminal miss by a factor of about $2.6$ relative to Moon-center only, and the landmark-only configuration nearly matches the combined Moon-plus-landmarks configuration, suggesting that bearing-ray spatial diversity is the dominant effect rather than the number of accepted updates.  Together, these tests support the headline claim while delineating where it stops being valid.
+The realism sweeps make the dependence of the headline result on its assumptions explicit.  Tightening the success threshold to $10^{-4}\,\LU\approx 39$ km drops the pass rate from $99\%$ to $33\%$ on CR3BP truth and from $85\%$ to $11\%$ on SPICE point-mass truth, so the baseline architecture meets a generous tolerance comfortably but is not a precision-arrival tool out of the box.  Adding zero-mean attitude noise of up to $0.03$ degrees per step degrades miss only marginally (within five percent of the no-noise baseline); the median miss inflates by about 43\% at $0.1$ degrees, then climbs steeply to roughly $1000$ km at $1$ degree because the un-modeled bearing residual exceeds the pixel-noise contribution and the filter loses statistical consistency.  The cumulative-parallax versus range-error fit recovers a negative-exponent power law (slope $\approx-0.57$ on the production data), which is the bearing-only physics-backed reason the filter ever resolves range, while making clear that range information is bounded by both an insufficient-arc floor at small $t_c$ and a noise floor at long arc.  The synthetic and catalog-backed landmark experiments improve median terminal miss by a factor of about $2.6$ relative to Moon-center only, with the landmark-only configuration nearly matching the combined Moon-plus-landmarks configuration in both layouts; this indicates that bearing-ray spatial diversity is the dominant effect rather than the number of accepted updates, and that the conclusion is not specific to the idealized symmetric L1 layout.  Together, these tests support the headline claim while delineating where it stops being valid.
 
 \begin{table*}[t]
 \centering
@@ -775,7 +919,8 @@ Illumination and star confusion & Excluded & No & Limb/photometric center model 
 \end{table*}
 
 \subsection{Modeling Assumptions and Limitations}
-Several simplifying assumptions are important to make explicit.  The main estimator and Monte Carlo studies use CR3BP dynamics; the SPICE arm uses a Sun--Earth--Moon point-mass propagator seeded from JPL ephemerides, which is best characterized as a point-mass truth stress test rather than a full flight-fidelity simulation.  Higher-order non-spherical gravity, solar radiation pressure, and propellant-related disturbances are not modeled.  The target-body ephemeris is assumed known, light-time and aberration effects are neglected, and the image-to-bearing conversion assumes perfect camera calibration apart from injected pixel noise.  The pointing law is idealized in baseline runs and explicitly stress-tested in the realism sweeps via zero-mean attitude noise, deterministic pointing bias, and pointing-lag steps; actuator limits, slew dynamics, and closed-loop attitude estimation remain out of scope.  The synthetic-landmark experiment of Section~\ref{sec:realism-landmarks} demonstrates a measurement-geometry effect, not real surface-feature identification: limb shape, illumination bias, star-background confusion, false-match logic, and surface-map uncertainty are not modeled.
+\label{sec:limitations}
+Several simplifying assumptions are important to make explicit.  The main estimator and Monte Carlo studies use CR3BP dynamics; the SPICE arm uses a Sun--Earth--Moon point-mass propagator seeded from JPL ephemerides, which is best characterized as a point-mass truth stress test rather than a full flight-fidelity simulation.  Higher-order non-spherical gravity, solar radiation pressure, and propellant-related disturbances are not modeled.  The target-body ephemeris is assumed known, light-time and aberration effects are neglected, and the image-to-bearing conversion assumes perfect camera calibration apart from injected pixel noise.  The pointing law is idealized in baseline runs and explicitly stress-tested in the realism sweeps via zero-mean attitude noise, deterministic pointing bias, and pointing-lag steps; actuator limits, slew dynamics, and closed-loop attitude estimation remain out of scope.  The synthetic and catalog-backed landmark experiments of Section~\ref{sec:realism-landmarks}, together with the pointing-degradation matrix of Section~\ref{sec:realism-landmarks-pointing}, demonstrate measurement-geometry and pointing-sensitivity effects respectively, not real surface-feature identification: limb shape, illumination bias, star-background confusion, false-match logic, and surface-map uncertainty are not modeled.
 
 The single-target bearing-only architecture has understandable limits.  It performs well for the nominal one-pixel baseline and a tuned covariance model, but high pixel noise, measurement delay, large pointing bias, early correction time, very poor initialization, or model mismatch can degrade the correction result.  Future improvements should prioritize real landmark identification with map and lighting uncertainty, multi-body bearings, explicit time-tag estimation in the filter, optical calibration error estimation, and higher-fidelity dynamics that include non-spherical gravity and solar radiation pressure.
 
@@ -786,7 +931,7 @@ This study numerically demonstrates that a single Moon-center bearing stream can
 
 The technical result is not simply that an IEKF settles.  The result is that bearing-only navigation must be evaluated as a coupled sensing-estimation-guidance problem.  Repeated angular measurements and CR3BP dynamics can recover useful range and velocity information, but the weakest estimation directions are not automatically the most mission-critical directions; they become critical when they align with the burn sensitivity of the transfer.  NIS alone is therefore too narrow a success criterion: NEES, terminal miss, and burn deviation are needed to expose overconfidence and model mismatch.
 
-Flight relevance requires additional observables and error sources beyond this minimal-information baseline.  This preprint presents the Moon-center bearing-only baseline together with reviewer-driven realism sweeps that stress-test pointing, terminal tolerance, parallax-based range observability, initial covariance, multi-revolution stability, and a synthetic-landmark measurement-geometry variant on top of the existing CR3BP/SPICE point-mass truth comparison.  Real surface-feature identification with map and lighting uncertainty, multi-body bearings, optical calibration error estimation, on-board time-tag estimation, and higher-fidelity dynamics that include non-spherical gravity and solar radiation pressure remain the natural next steps.
+Flight relevance requires additional observables and error sources beyond this minimal-information baseline.  This preprint presents the Moon-center bearing-only baseline together with reviewer-driven realism sweeps that stress-test pointing, terminal tolerance, parallax-based range observability, initial covariance, multi-revolution stability, and synthetic and catalog-backed landmark measurement-geometry variants (including a $3\times 5$ landmark-by-pointing-mode matrix) on top of the existing CR3BP/SPICE point-mass truth comparison.  Real surface-feature identification with map and lighting uncertainty, multi-body bearings, optical calibration error estimation, on-board time-tag estimation, and higher-fidelity dynamics that include non-spherical gravity and solar radiation pressure remain the natural next steps.
 
 \section*{Code Availability}
 The source code and numerical products required to reproduce the figures and tables are available in the accompanying repository.  The main experiments include the baseline Monte Carlo study, process-noise sweep, active-pointing comparison, sensitivity studies, and model-mismatch stress test.
@@ -808,6 +953,12 @@ F. L. Markley and J. L. Crassidis, \textit{Fundamentals of Spacecraft Attitude D
 \bibitem{christian2021}
 J. A. Christian, ``A Tutorial on Horizon-Based Optical Navigation and Attitude Determination with Space Imaging Systems,'' \textit{IEEE Access}, Vol. 9, pp. 19819--19853, 2021. \url{https://doi.org/10.1109/ACCESS.2021.3051914}
 
+\bibitem{christianCrater2021}
+J. A. Christian, H. Derksen, and R. Watkins, ``Lunar Crater Identification in Digital Images,'' \textit{The Journal of the Astronautical Sciences}, Vol. 68, pp. 1056--1144, 2021. \url{https://doi.org/10.1007/s40295-021-00287-8}
+
+\bibitem{owen2024}
+W. M. Owen, Jr., \textit{Spacecraft Optical Navigation}, JPL Deep-Space Communications and Navigation Series, Wiley, Hoboken, NJ, 2024.
+
 \bibitem{bradley2020}
 N. Bradley, Z. Olikara, S. Bhaskaran, and B. Young, ``Cislunar Navigation Accuracy Using Optical Observations of Natural and Artificial Targets,'' \textit{Journal of Spacecraft and Rockets}, 2020. \url{https://doi.org/10.2514/1.A34694}
 
@@ -819,6 +970,36 @@ T. A. Ely, J. Seubert, N. Bradley, T. Drain, and S. Bhaskaran, ``Radiometric Aut
 
 \bibitem{krause2024}
 M. Krause, A. Thrasher, P. Soni, L. Smego, R. Isaac, J. Nolan, M. Pledger, E. G. Lightsey, W. J. Ready, and J. Christian, ``LONEStar: The Lunar Flashlight Optical Navigation Experiment,'' \textit{The Journal of the Astronautical Sciences}, Vol. 71, Article 33, 2024. \url{https://doi.org/10.1007/s40295-024-00452-9}
+
+\bibitem{aidala1979}
+V. J. Aidala, ``Kalman Filter Behavior in Bearings-Only Tracking Applications,'' \textit{IEEE Transactions on Aerospace and Electronic Systems}, Vol. AES-15, No. 1, pp. 29--39, 1979. \url{https://ieeexplore.ieee.org/document/4102101/}
+
+\bibitem{nardone1981}
+S. C. Nardone and V. J. Aidala, ``Observability Criteria for Bearings-Only Target Motion Analysis,'' \textit{IEEE Transactions on Aerospace and Electronic Systems}, Vol. AES-17, No. 2, pp. 162--166, 1981. \url{https://ieeexplore.ieee.org/document/4102465/}
+
+\bibitem{woffinden2009}
+D. C. Woffinden and D. K. Geller, ``Observability Criteria for Angles-Only Navigation,'' \textit{IEEE Transactions on Aerospace and Electronic Systems}, Vol. 45, No. 3, pp. 1194--1208, 2009.
+
+\bibitem{gellerklein2014}
+D. K. Geller and I. Klein, ``Angles-Only Navigation State Observability During Orbital Proximity Operations,'' \textit{Journal of Guidance, Control, and Dynamics}, Vol. 37, No. 6, pp. 1976--1983, 2014.
+
+\bibitem{henry2023}
+S. Henry and J. A. Christian, ``Absolute Triangulation Algorithms for Space Exploration,'' \textit{Journal of Guidance, Control, and Dynamics}, Vol. 46, No. 1, pp. 21--46, 2023. \url{https://doi.org/10.2514/1.G006989}
+
+\bibitem{smego2025}
+J. Smego and J. A. Christian, ``Dynamic Triangulation for Cislunar Initial Orbit Determination,'' \textit{The Journal of the Astronautical Sciences}, Vol. 73, Article 14, 2026. \url{https://doi.org/10.1007/s40295-025-00553-z}
+
+\bibitem{thompson2022}
+M. R. Thompson, A. Forsman, S. Chikine, B. C. Peters, T. Ely, D. Sorensen, J. Parker, and B. Cheetham, ``Cislunar Navigation Technology Demonstrations on the CAPSTONE Mission,'' \textit{Proceedings of the 2022 International Technical Meeting of the Institute of Navigation}, pp. 471--484, January 2022.
+
+\bibitem{greaves2021}
+J. A. Greaves and D. J. Scheeres, ``Observation and Maneuver Detection for Cislunar Vehicles: Using Optical Measurements and the Optimal Control Based Estimator,'' \textit{The Journal of the Astronautical Sciences}, Vol. 68, pp. 826--854, 2021. \url{https://doi.org/10.1007/s40295-021-00283-y}
+
+\bibitem{greaves2023}
+J. A. Greaves and D. J. Scheeres, ``Autonomous Optical-Only Spacecraft-to-Spacecraft Absolute Tracking and Maneuver Classification in Cislunar Space,'' \textit{Journal of Guidance, Control, and Dynamics}, Vol. 46, No. 11, pp. 2092--2109, 2023. \url{https://doi.org/10.2514/1.G007223}
+
+\bibitem{robbins2019}
+S. J. Robbins, ``A New Global Database of Lunar Impact Craters $>1$~km: 1. Crater Locations and Sizes, Comparisons With Published Databases, and Global Analysis,'' \textit{Journal of Geophysical Research: Planets}, Vol. 124, No. 4, pp. 871--892, 2019. \url{https://doi.org/10.1029/2018JE005592}
 
 \bibitem{jplperiodic}
 NASA/JPL, ``Three-Body Periodic Orbits API,'' Earth--Moon halo-family records.

@@ -8,3 +8,22 @@ data/kernels/
 /results/
 .env
 results.zip
+
+# LaTeX build products (keep .tex / .bib in git; drop transient build artifacts)
+*.aux
+*.log
+*.fls
+*.fdb_latexmk
+*.out
+*.toc
+*.lof
+*.lot
+*.bbl
+*.blg
+*.synctex.gz
+*.dvi
+*.textClipping
+
+# macOS / editor scratch
+.DS_Store
+*.swp

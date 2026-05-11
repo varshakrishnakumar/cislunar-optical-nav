@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Any, Dict, Literal
 
@@ -26,8 +27,10 @@ from scipy.stats import chi2
 
 from dynamics.cr3bp import CR3BP
 from dynamics.integrators import propagate
-from nav.ekf import ekf_propagate_cr3bp_stm, ekf_propagate_stm
-from nav.measurements.bearing import bearing_update_tangent
+from nav.ekf import Qd_white_accel, ekf_propagate_cr3bp_stm, ekf_propagate_stm
+from nav.measurements.bearing import (
+    bearing_update_tangent, los_unit, tangent_basis,
+)
 from nav.measurements.pixel_bearing import pixel_detection_to_bearing
 from cv.camera import Intrinsics
 from cv.pointing import (
@@ -80,6 +83,138 @@ def _resolve_camera_mode(camera_mode: Any) -> str:
     return s
 
 
+# ── Filter-kind helpers (for the 06s estimator-ablation experiment) ─────────
+# The default IEKF path is preserved exactly; "ekf" reuses the same code path
+# with max_iterations=1; "ukf" uses the Wan/van der Merwe sigma-point UKF
+# (alpha=1e-3, beta=2.0, kappa=0.0) lifted from src/cisopt/estimators/ukf.py
+# so the two implementations stay numerically aligned. The truth model,
+# camera, pointing law, measurement generation, gating policy
+# (gating_enabled=False everywhere), process-noise tuning, and seeds are
+# identical across all three filter kinds — only the predict and update
+# steps differ. See `\subsection{Estimator Ablation}` in the report for the
+# implementation-vs-theory caveats.
+FilterKind = Literal["ekf", "iekf", "ukf"]
+_VALID_FILTER_KINDS = ("ekf", "iekf", "ukf")
+_UKF_ALPHA = 1.0e-3
+_UKF_BETA  = 2.0
+_UKF_KAPPA = 0.0
+
+
+def _resolve_filter_kind(filter_kind: Any) -> str:
+    s = str(filter_kind).strip().lower()
+    if s not in _VALID_FILTER_KINDS:
+        raise ValueError(
+            f"filter_kind must be one of {_VALID_FILTER_KINDS}, got {filter_kind!r}"
+        )
+    return s
+
+
+def _ukf_sigma_weights(n: int) -> tuple[float, np.ndarray, np.ndarray]:
+    lam = _UKF_ALPHA * _UKF_ALPHA * (n + _UKF_KAPPA) - n
+    c = n + lam
+    Wm = np.full(2 * n + 1, 1.0 / (2.0 * c), dtype=float)
+    Wc = np.full(2 * n + 1, 1.0 / (2.0 * c), dtype=float)
+    Wm[0] = lam / c
+    Wc[0] = lam / c + (1.0 - _UKF_ALPHA * _UKF_ALPHA + _UKF_BETA)
+    return c, Wm, Wc
+
+
+def _ukf_sigma_points(x: np.ndarray, P: np.ndarray, c: float) -> np.ndarray:
+    n = x.size
+    P_sym = 0.5 * (P + P.T)
+    eigvals, eigvecs = np.linalg.eigh(P_sym)
+    eigvals = np.maximum(eigvals, 0.0)
+    sqrt_P = (eigvecs * np.sqrt(eigvals)) @ eigvecs.T
+    L = np.linalg.cholesky(c * (sqrt_P @ sqrt_P) + 1e-18 * np.eye(n))
+    sigmas = np.zeros((2 * n + 1, n), dtype=float)
+    sigmas[0] = x
+    for i in range(n):
+        sigmas[1 + i] = x + L[:, i]
+        sigmas[1 + n + i] = x - L[:, i]
+    return sigmas
+
+
+def _ukf_predict_cr3bp(
+    *, mu: float, x: np.ndarray, P: np.ndarray,
+    t0: float, t1: float, q_acc: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sigma-point CR3BP predict; returns (x_pred, P_pred). No STM."""
+    n = int(x.size)
+    c, Wm, Wc = _ukf_sigma_weights(n)
+    sigmas = _ukf_sigma_points(x, P, c)
+    model = CR3BP(mu=float(mu))
+    propagated = np.zeros_like(sigmas)
+    for i in range(sigmas.shape[0]):
+        res = propagate(
+            model.eom, (float(t0), float(t1)),
+            sigmas[i], rtol=1e-11, atol=1e-13,
+        )
+        if not res.success:
+            raise RuntimeError(f"UKF sigma propagation failed: {res.message}")
+        propagated[i] = res.x[-1]
+    x_pred = (Wm[:, None] * propagated).sum(axis=0)
+    diff = propagated - x_pred
+    P_pred = (Wc[:, None, None] * diff[:, :, None] * diff[:, None, :]).sum(axis=0)
+    P_pred = 0.5 * (P_pred + P_pred.T)
+    P_pred = P_pred + Qd_white_accel(float(t1) - float(t0), float(q_acc))
+    return x_pred, P_pred
+
+
+def _ukf_bearing_update(
+    *, x: np.ndarray, P: np.ndarray,
+    u_meas: np.ndarray, r_body: np.ndarray, sigma_theta: float,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Sigma-point bearing update with tangent-plane unit-vector residual.
+
+    Lifted verbatim from cisopt UKF for numerical alignment. Returns
+    (x_upd, P_upd, nis). Always 'accepts' (no gating), matching the
+    gating_enabled=False default used by bearing_update_tangent in this
+    pipeline.
+    """
+    n = int(x.size)
+    c, Wm, Wc = _ukf_sigma_weights(n)
+    sigmas = _ukf_sigma_points(x, P, c)
+
+    u_sigmas = np.zeros((sigmas.shape[0], 3), dtype=float)
+    for i in range(sigmas.shape[0]):
+        u_i, _ = los_unit(r_body, sigmas[i, :3])
+        u_sigmas[i] = u_i
+
+    u_pred_mean = (Wm[:, None] * u_sigmas).sum(axis=0)
+    u_pred_mean = u_pred_mean / np.linalg.norm(u_pred_mean)
+
+    e1, e2 = tangent_basis(u_pred_mean)
+    E = np.vstack([e1, e2])
+
+    z_sigmas = u_sigmas @ E.T
+    z_pred = (Wm[:, None] * z_sigmas).sum(axis=0)
+    z_meas = E @ np.asarray(u_meas, dtype=float).reshape(3)
+    innov = z_meas - z_pred
+
+    diff_z = z_sigmas - z_pred
+    diff_x = sigmas - x
+    R = (sigma_theta * sigma_theta) * np.eye(2, dtype=float)
+
+    S = (Wc[:, None, None] * diff_z[:, :, None] * diff_z[:, None, :]).sum(axis=0) + R
+    S = 0.5 * (S + S.T)
+    Cxz = (Wc[:, None, None] * diff_x[:, :, None] * diff_z[:, None, :]).sum(axis=0)
+
+    try:
+        K = np.linalg.solve(S.T, Cxz.T).T
+    except np.linalg.LinAlgError:
+        K = Cxz @ np.linalg.pinv(S)
+
+    x_upd = x + K @ innov
+    P_upd = P - K @ S @ K.T
+    P_upd = 0.5 * (P_upd + P_upd.T)
+
+    try:
+        nis = float(innov @ np.linalg.solve(S, innov))
+    except np.linalg.LinAlgError:
+        nis = float("nan")
+    return x_upd, P_upd, nis
+
+
 
 def run_case(
     mu: float,
@@ -105,8 +240,23 @@ def run_case(
     return_debug: bool = True,
     accumulate_gramian: bool = True,
     P_cov_history: bool = False,
+    filter_kind: FilterKind = "iekf",
+    iekf_max_iter: int = 3,
 ) -> Dict[str, Any]:
     camera_mode = _resolve_camera_mode(camera_mode)
+    filter_kind = _resolve_filter_kind(filter_kind)
+    # filter_kind="ekf" is shorthand for "IEKF with max_iterations=1",
+    # matching cisopt's EKFEstimator convention. Auto-override only when
+    # the caller left iekf_max_iter at its default of 3, so an explicit
+    # caller-provided value is still respected.
+    if filter_kind == "ekf" and int(iekf_max_iter) == 3:
+        iekf_max_iter = 1
+    # UKF has no STM, so the observability Gramian cannot be accumulated
+    # with the same machinery as EKF/IEKF. Silently disable rather than
+    # raising — the 06s ablation driver passes accumulate_gramian=False
+    # explicitly, but other callers may not.
+    if filter_kind == "ukf" and accumulate_gramian:
+        accumulate_gramian = False
 
     rng    = np.random.default_rng(int(seed))
     model  = CR3BP(mu=float(mu))
@@ -175,6 +325,14 @@ def run_case(
     accepted_moon_arr      = np.zeros(k_tc + 1, dtype=bool)
     accepted_landmarks_arr = np.zeros(k_tc + 1, dtype=int)
     epoch_accepted_arr     = np.zeros(k_tc + 1, dtype=bool)
+    # Per-source angular offset of the imaged point from the *commanded*
+    # camera boresight (+z), computed from truth at k_meas. Distinguishes
+    # "source stayed visible" (small offset, in FOV) from "source forced
+    # near FOV edge" (large offset, near or past FOV limit). Lets the
+    # 06r landmarks-under-pointing-degradation driver tell apart the
+    # visibility-substitution and geometry-improvement mechanisms.
+    moon_offset_rad_hist:      list[float]      = []
+    landmark_offset_rad_hist:  list[np.ndarray] = []
 
     # Observability Gramian: W = Σ_k Φ(t_k,t_0)ᵀ Hₖᵀ Hₖ Φ(t_k,t_0)
     # Eigenvectors of W reveal which state-space directions are (poorly)
@@ -187,12 +345,32 @@ def run_case(
     W_obs_landmarks    = np.zeros((6, 6), dtype=float) if accumulate_gramian else None
     gramian_eig_hist: list[np.ndarray] = []
 
+    # Per-trial runtime accumulators for the 06s estimator-ablation experiment.
+    # Times are wall-clock perf_counter() seconds, exclusive of measurement
+    # generation, gating, observability accumulation, and bookkeeping.
+    t_predict_total_s  = 0.0
+    t_update_total_s   = 0.0
+    n_predict_calls    = 0
+    n_update_calls     = 0
+    iters_used_total   = 0  # sum of iterations consumed across all updates
+    t_trial_start_s    = time.perf_counter()
+
     for k in range(1, k_tc + 1):
-        x_hat, P, Phi_step = ekf_propagate_cr3bp_stm(
-            mu=float(mu), x=x_hat, P=P,
-            t0=float(t_meas[k - 1]), t1=float(t_meas[k]), q_acc=q_acc,
-        )
-        if accumulate_gramian:
+        _t_pred = time.perf_counter()
+        if filter_kind == "ukf":
+            x_hat, P = _ukf_predict_cr3bp(
+                mu=float(mu), x=x_hat, P=P,
+                t0=float(t_meas[k - 1]), t1=float(t_meas[k]), q_acc=q_acc,
+            )
+            Phi_step = None
+        else:
+            x_hat, P, Phi_step = ekf_propagate_cr3bp_stm(
+                mu=float(mu), x=x_hat, P=P,
+                t0=float(t_meas[k - 1]), t1=float(t_meas[k]), q_acc=q_acc,
+            )
+        t_predict_total_s += time.perf_counter() - _t_pred
+        n_predict_calls   += 1
+        if accumulate_gramian and Phi_step is not None:
             Phi_cum = Phi_step @ Phi_cum
 
         # Optional measurement-delay simulation: pretend the truth state
@@ -229,6 +407,36 @@ def run_case(
             R_perturb = random_small_rotation_dcm(rng, float(sigma_att_rad))
             R_cam_actual = R_perturb @ R_cam_actual
 
+        # Angular offset of each imaged point from the commanded boresight
+        # (+z in the camera frame). NaN if the source is behind the camera
+        # (z<=0). This is computed from R_cam_cmd, not R_cam_actual, so
+        # bias/noise show up as accept/reject churn rather than as offset.
+        rho_moon_inertial = r_body - r_sc_true
+        n_moon = float(np.linalg.norm(rho_moon_inertial))
+        if n_moon > 1e-12:
+            u_moon_cam = R_cam_cmd @ (rho_moon_inertial / n_moon)
+            moon_offset_rad = (
+                float(np.arccos(np.clip(u_moon_cam[2], -1.0, 1.0)))
+                if u_moon_cam[2] > 0.0 else float("nan")
+            )
+        else:
+            moon_offset_rad = float("nan")
+        moon_offset_rad_hist.append(moon_offset_rad)
+        if lmk_arr.shape[0] > 0:
+            lmk_offsets = np.full(lmk_arr.shape[0], np.nan, dtype=float)
+            for j in range(lmk_arr.shape[0]):
+                rho_lmk = lmk_arr[j] - r_sc_true
+                n_lmk = float(np.linalg.norm(rho_lmk))
+                if n_lmk > 1e-12:
+                    u_lmk_cam = R_cam_cmd @ (rho_lmk / n_lmk)
+                    if u_lmk_cam[2] > 0.0:
+                        lmk_offsets[j] = float(
+                            np.arccos(np.clip(u_lmk_cam[2], -1.0, 1.0))
+                        )
+            landmark_offset_rad_hist.append(lmk_offsets)
+        else:
+            landmark_offset_rad_hist.append(np.zeros(0, dtype=float))
+
         nis_all_this_epoch:        list[float] = []
         nis_landmarks_this_epoch:  list[float] = []
         moon_accepted = False
@@ -249,23 +457,39 @@ def run_case(
                     meas.u_px, meas.v_px, float(sigma_px), intr, R_cam_cmd.T
                 )
                 if np.all(np.isfinite(u_g)):
-                    upd = bearing_update_tangent(
-                        x_hat, P, u_g, r_body, float(sig_k)
-                    )
-                    if upd.accepted:
-                        x_hat, P = upd.x_upd, upd.P_upd
+                    _t_upd = time.perf_counter()
+                    if filter_kind == "ukf":
+                        x_hat, P, _nis_ukf = _ukf_bearing_update(
+                            x=x_hat, P=P, u_meas=u_g,
+                            r_body=r_body, sigma_theta=float(sig_k),
+                        )
                         moon_accepted = True
-                        if accumulate_gramian:
-                            HtH = upd.H.T @ upd.H
-                            W_obs      += Phi_cum.T @ HtH @ Phi_cum
-                            W_obs_moon += Phi_cum.T @ HtH @ Phi_cum
-                    nis_list.append(float(upd.nis))
-                    nis_all_this_epoch.append(float(upd.nis))
-                    innov_2d_list.append(
-                        upd.final_innovation.copy()
-                        if upd.final_innovation is not None
-                        else upd.innovation.copy()
-                    )
+                        nis_list.append(float(_nis_ukf))
+                        nis_all_this_epoch.append(float(_nis_ukf))
+                        innov_2d_list.append(np.full(2, np.nan))  # not tracked for UKF
+                        iters_used_total += 1
+                    else:
+                        upd = bearing_update_tangent(
+                            x_hat, P, u_g, r_body, float(sig_k),
+                            max_iterations=int(iekf_max_iter),
+                        )
+                        if upd.accepted:
+                            x_hat, P = upd.x_upd, upd.P_upd
+                            moon_accepted = True
+                            if accumulate_gramian:
+                                HtH = upd.H.T @ upd.H
+                                W_obs      += Phi_cum.T @ HtH @ Phi_cum
+                                W_obs_moon += Phi_cum.T @ HtH @ Phi_cum
+                        nis_list.append(float(upd.nis))
+                        nis_all_this_epoch.append(float(upd.nis))
+                        innov_2d_list.append(
+                            upd.final_innovation.copy()
+                            if upd.final_innovation is not None
+                            else upd.innovation.copy()
+                        )
+                        iters_used_total += int(upd.iterations)
+                    t_update_total_s += time.perf_counter() - _t_upd
+                    n_update_calls   += 1
                 else:
                     nis_list.append(float("nan"))
                     innov_2d_list.append(np.full(2, np.nan))
@@ -297,16 +521,33 @@ def run_case(
             )
             if not np.all(np.isfinite(u_l)):
                 continue
-            upd_l = bearing_update_tangent(x_hat, P, u_l, lmk_pos, float(sig_l))
-            if upd_l.accepted:
-                x_hat, P = upd_l.x_upd, upd_l.P_upd
+            _t_upd_l = time.perf_counter()
+            if filter_kind == "ukf":
+                x_hat, P, _nis_l = _ukf_bearing_update(
+                    x=x_hat, P=P, u_meas=u_l,
+                    r_body=lmk_pos, sigma_theta=float(sig_l),
+                )
                 n_lmk_accepted += 1
-                if accumulate_gramian:
-                    HtH_l = upd_l.H.T @ upd_l.H
-                    W_obs           += Phi_cum.T @ HtH_l @ Phi_cum
-                    W_obs_landmarks += Phi_cum.T @ HtH_l @ Phi_cum
-            nis_all_this_epoch.append(float(upd_l.nis))
-            nis_landmarks_this_epoch.append(float(upd_l.nis))
+                nis_all_this_epoch.append(float(_nis_l))
+                nis_landmarks_this_epoch.append(float(_nis_l))
+                iters_used_total += 1
+            else:
+                upd_l = bearing_update_tangent(
+                    x_hat, P, u_l, lmk_pos, float(sig_l),
+                    max_iterations=int(iekf_max_iter),
+                )
+                if upd_l.accepted:
+                    x_hat, P = upd_l.x_upd, upd_l.P_upd
+                    n_lmk_accepted += 1
+                    if accumulate_gramian:
+                        HtH_l = upd_l.H.T @ upd_l.H
+                        W_obs           += Phi_cum.T @ HtH_l @ Phi_cum
+                        W_obs_landmarks += Phi_cum.T @ HtH_l @ Phi_cum
+                nis_all_this_epoch.append(float(upd_l.nis))
+                nis_landmarks_this_epoch.append(float(upd_l.nis))
+                iters_used_total += int(upd_l.iterations)
+            t_update_total_s += time.perf_counter() - _t_upd_l
+            n_update_calls   += 1
 
         accepted_moon_arr[k]      = moon_accepted
         accepted_landmarks_arr[k] = n_lmk_accepted
@@ -492,6 +733,48 @@ def run_case(
         "parallax_cumulative_rad": parallax_cumulative_rad,
         "parallax_total_rad":      parallax_total_rad,  # legacy alias
         "range_err_tc":       range_err_tc,
+        # Per-source median angular offset from the commanded boresight
+        # (radians). Used by the 06r landmarks-under-pointing-degradation
+        # driver to distinguish "source stayed visible" from "source
+        # forced near FOV edge / out of frame". NaN where source is
+        # behind camera; landmarks_med pools over (epochs × landmarks)
+        # for compactness.
+        "moon_offset_rad_med": float(
+            np.nanmedian(moon_offset_rad_hist)
+            if moon_offset_rad_hist
+            and any(np.isfinite(o) for o in moon_offset_rad_hist)
+            else float("nan")
+        ),
+        "landmark_offset_rad_med": float(
+            np.nanmedian(np.concatenate(landmark_offset_rad_hist))
+            if (
+                landmark_offset_rad_hist
+                and any(arr.size for arr in landmark_offset_rad_hist)
+                and np.any(np.isfinite(np.concatenate(landmark_offset_rad_hist)))
+            )
+            else float("nan")
+        ),
+        # Filter-ablation bookkeeping: which filter ran, total wall time,
+        # per-call wall times in microseconds, and per-update mean iteration
+        # count. For UKF, iters_used_mean is always 1 (single sigma-point
+        # update); for EKF it is always 1 (max_iterations=1); for IEKF it is
+        # the trial mean of bearing_update_tangent's reported iteration
+        # counter.
+        "filter_kind":         filter_kind,
+        "iekf_max_iter":       int(iekf_max_iter),
+        "t_trial_total_s":     float(time.perf_counter() - t_trial_start_s),
+        "t_predict_total_s":   float(t_predict_total_s),
+        "t_update_total_s":    float(t_update_total_s),
+        "t_predict_mean_us":   float(
+            1e6 * t_predict_total_s / n_predict_calls
+        ) if n_predict_calls else float("nan"),
+        "t_update_mean_us":    float(
+            1e6 * t_update_total_s / n_update_calls
+        ) if n_update_calls else float("nan"),
+        "n_predict_calls":     int(n_predict_calls),
+        "n_update_calls":      int(n_update_calls),
+        "iters_used_mean":     float(iters_used_total / n_update_calls)
+        if n_update_calls else float("nan"),
     }
     if not return_debug:
         return out
