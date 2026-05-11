@@ -40,7 +40,7 @@ ensure_src_on_path()
 from utils.units import RunUnits  # noqa: E402
 
 _DEFAULT_SCALES = [1.0, 3.0, 10.0, 30.0, 100.0]
-_KM_PER_LU = 384_400.0
+from _paper_constants import KM_PER_LU as _KM_PER_LU
 
 
 def _run_one_sweep(

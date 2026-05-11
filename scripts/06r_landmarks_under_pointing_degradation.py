@@ -74,7 +74,8 @@ from _common import ensure_src_on_path, repo_path
 ensure_src_on_path()
 from utils.units import RunUnits  # noqa: E402
 
-_KM_PER_LU = 384_400.0
+from _paper_constants import KM_PER_LU as _KM_PER_LU  # noqa: E402
+
 _MOON_RADIUS_KM = 1737.4
 _MOON_RADIUS_ND = _MOON_RADIUS_KM / _KM_PER_LU
 

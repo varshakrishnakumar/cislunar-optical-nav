@@ -1,17 +1,31 @@
 # Cislunar Optical Navigation
 
 Bearing-only optical navigation and midcourse-correction analysis for cislunar
-trajectories. The project started as an ASTE 581 script pipeline and now has a
-config-driven experiment layer, `cisopt`, for Monte Carlo sweeps, ablations,
-estimator comparisons, observability analysis, and report figures.
+transfers. This repository contains the source code, configs, and canonical
+n=1000 production artifacts behind a journal manuscript on **guidance-coupled
+evaluation of a minimum-information Moon-center bearing architecture** in a
+cislunar transfer, with reality checks on attitude noise, pointing degradation,
+multi-revolution stability, parallax-vs-range observability, $P_0$
+initialization, measurement delay, synthetic and catalog-backed landmark
+geometry, and SPICE point-mass truth.
+
+- **Manuscript:** [`reports/final-report/final_report.tex`](reports/final-report/final_report.tex)
+  → compiled PDF at [`reports/final-report/final_report.pdf`](reports/final-report/final_report.pdf)
+- **Reviewer-grade reproduction:** [`REPRODUCING.md`](REPRODUCING.md)
+- **Canonical CSV/figure/summary bundle:** [`paper_artifacts/`](paper_artifacts/)
+- **Figure-to-script manifest:** [`docs/experiment_manifest.md`](docs/experiment_manifest.md)
+- **Locked paper constants** (`KM_PER_LU = 389703.2648`, `Q_ACC_CANONICAL = 1e-14`):
+  [`scripts/_paper_constants.py`](scripts/_paper_constants.py)
 
 There are two layers in this repository:
 
-- **Layer 1:** the original ASTE 581 optical-navigation implementation under
-  `src/` and `scripts/`.
-- **Layer 2:** `src/cisopt/`, the publication-oriented experiment framework
-  built on top of those dynamics, sensor, estimator, guidance, and plotting
-  primitives.
+- **Layer 1:** the original optical-navigation implementation under
+  `src/` and `scripts/`, including the numbered 06\* drivers that produced
+  the journal manuscript's n=1000 production runs.
+- **Layer 2:** `src/cisopt/`, a config-driven experiment framework built on
+  top of the Layer-1 dynamics / sensor / estimator / guidance primitives.
+  The journal manuscript currently uses Layer 1; Layer 2 is the staging
+  ground for the next paper's experiments.
 
 ## What This Project Does
 
@@ -55,33 +69,35 @@ environment used during development:
 If you are using your own virtual environment, call the scripts with `python3`
 instead.
 
-## Quickstart For Paper Figures
+## Quickstart For The Journal Manuscript
 
-This regenerates the data products and report figures used by the current
-`cisopt` report flow:
-
-```bash
-python3 -m pip install -r requirements.txt
-python3 reproduce_paper.py --quick --out reports/onboard/data
-python3 make_report.py reports/onboard/data --plots-dir reports/onboard/figures --theme paper
-```
-
-The full reproduction drops `--quick`:
+The reviewer-facing reproduction flow lives in
+[`REPRODUCING.md`](REPRODUCING.md). The short version:
 
 ```bash
-python3 reproduce_paper.py --out reports/onboard/data
-python3 make_report.py reports/onboard/data --plots-dir reports/onboard/figures --theme paper
+python3.13 -m venv .cisopt
+source .cisopt/bin/activate
+pip install -r requirements-lock.txt
+
+# Rebuild every paper figure / table from canonical CSVs (~1 s):
+python scripts/06t_success_ecdf_central.py
+
+# Rebuild the PDF:
+cd reports/final-report
+pdflatex -interaction=nonstopmode -halt-on-error final_report.tex
+pdflatex -interaction=nonstopmode -halt-on-error final_report.tex
 ```
 
-The SPICE scenario expects kernels at:
+Full production Monte Carlo regeneration (≈ 3 h CR3BP, ≈ 8 h SPICE) is
+documented in [`REPRODUCING.md`](REPRODUCING.md) section 4 and the per-
+driver wall times are reported in
+[`docs/experiment_manifest.md`](docs/experiment_manifest.md).
 
-```text
-data/kernels/naif0012.tls
-data/kernels/de442s.bsp
-```
-
-Those files are ignored by git because they are external data. The CR3BP-only
-examples do not need SPICE kernels.
+The SPICE point-mass truth comparison and the scenario visualization both
+expect two NAIF kernels at `data/kernels/naif0012.tls` and
+`data/kernels/de442s.bsp`. These are external (license + size) and are
+not in version control; see REPRODUCING for the curl commands. CR3BP-only
+reproduction needs no kernels.
 
 ## Config-Driven Experiments With `cisopt`
 
@@ -148,15 +164,35 @@ pieces together through the shared protocols.
 
 ## Current Paper Claims
 
-The current report direction is built around three claims:
+The journal manuscript is built around a single locked thesis:
 
-- Estimator mean performance is less informative than NEES tail behavior.
-- Weak observability directions are not necessarily burn-sensitive directions.
-- Heavy-tailed centroid noise can break NIS consistency without the filter
-  self-detecting the corruption.
+> A sparse Moon-center bearing stream is guidance-useful when target
+> visibility is actively maintained, but the architecture's utility must
+> be judged by terminal correction performance, NEES, and visibility
+> jointly — not by innovation consistency alone — and is bounded by
+> explicit dynamical, measurement, and timing assumptions.
 
-The data and figures behind those claims are generated by `reproduce_paper.py`
-and `make_report.py`, then consumed by `reports/onboard/cisopt_session_report.tex`.
+The three guidance-coupled contributions:
+
+1. **Mission-output evaluation framework** — terminal miss, $\Delta V$
+   inflation, NEES, NIS, and visibility fraction reported jointly per
+   scenario, replacing the more common estimator-only scorecard.
+2. **Active pointing as part of the navigation architecture** — a
+   1000-trial demonstration that estimate-driven pointing converts a
+   fragile passive camera into a closed-loop measurement source, plus a
+   pointing-degradation ladder that bounds where this benefit holds.
+3. **Bounded-realism characterization of the minimum-information bearing
+   architecture** — reality checks on terminal tolerance, attitude noise,
+   multi-revolution stability, parallax-vs-range, $P_0$ sensitivity,
+   measurement delay, synthetic and catalog-backed landmark geometry, and
+   SPICE point-mass truth.
+
+The canonical numbers for the manuscript are in
+[`paper_artifacts/README.md`](paper_artifacts/README.md). The data and
+figures behind these claims are generated by the numbered `06*` scripts
+under `scripts/`; the older `reproduce_paper.py` + `make_report.py` +
+`reports/onboard/` flow is preserved for the earlier class-project report
+but is not the journal-manuscript pipeline.
 
 ## Where Things Live
 

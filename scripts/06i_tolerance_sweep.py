@@ -32,7 +32,7 @@ from _common import ensure_src_on_path, repo_path
 ensure_src_on_path()
 from utils.units import RunUnits  # noqa: E402
 
-_LU_KM = 384_400.0
+from _paper_constants import KM_PER_LU as _LU_KM  # noqa: E402
 
 
 def _load_miss_km(csv_path: Path) -> tuple[np.ndarray, str]:

@@ -1,0 +1,8 @@
+Success-rate-vs-threshold central figure (06t)
+====================================================================================================
+
+curve                                                n     pass<25km     pass<39km    pass<390km   med [km]   p95 [km]
+C1 Baseline CR3BP, Moon-only, active              1000        18.10%        32.80%        99.10%      61.64     228.27
+C2 SPICE truth, Moon-only, active                 1000         6.80%        11.20%        85.30%     182.88     539.02
+C3 CR3BP, Moon + L2 catalog landmarks             1000        49.80%        71.30%       100.00%      25.07      72.51
+C4 Uncorrected (no midcourse burn)                1000         1.60%         3.80%        41.80%     464.67    1297.40

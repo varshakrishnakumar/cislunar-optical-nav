@@ -72,13 +72,14 @@ from _common import ensure_src_on_path, repo_path
 ensure_src_on_path()
 from utils.units import RunUnits  # noqa: E402
 
-_KM_PER_LU = 384_400.0
+from _paper_constants import KM_PER_LU as _KM_PER_LU  # noqa: E402
+
 _FILTER_KINDS = ("ekf", "iekf", "ukf")
 
-# Mission-relevant terminal-miss thresholds (LU, converted to km in the
-# aggregator). 1e-3 LU = ~390 km is the report's screening tolerance;
-# 1e-4 LU = ~39 km is the tight reality-check tolerance from the
-# existing terminal-tolerance reality-check section.
+# Mission-relevant terminal-miss thresholds (LU, converted to km via the
+# canonical KM_PER_LU). 1e-3 LU is the report's screening tolerance;
+# 1e-4 LU is the tight reality-check tolerance from the existing
+# terminal-tolerance reality-check section.
 _THRESHOLDS_LU  = (1e-3, 1e-4)
 _THRESHOLDS_KM  = tuple(t * _KM_PER_LU for t in _THRESHOLDS_LU)
 

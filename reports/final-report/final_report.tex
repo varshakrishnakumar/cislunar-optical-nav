@@ -40,7 +40,7 @@
 \maketitle
 \vspace{-0.15in}
 \begin{abstract}
-Cislunar optical navigation is often validated through estimator-internal statistics, but mission users consume the navigation state through a guidance pipeline whose outputs (terminal miss, $\Delta V$ inflation, measurement availability) are what determine flight utility.  This paper evaluates the minimum-information case of cislunar optical navigation through that lens: the baseline architecture uses a single Moon-center bearing stream, with no radiometric range, no in-filter landmark identification, and no multi-body triangulation; the realism extension assumes \emph{known} landmark identities (synthetic and Robbins-catalog craters) to isolate the navigation-geometry effect of bearing diversity from any computer-vision performance claim.  Idealized body-center pixel measurements from a calibrated pinhole camera are converted to tangent-plane line-of-sight residuals, fused with a CR3BP iterated extended Kalman filter (IEKF), and passed to STM-based single-impulse targeting; estimate-driven active pointing closes the measurement-availability loop.  The central claim is that a sparse Moon-center bearing stream is guidance-useful when target visibility is actively maintained, but the architecture's utility must be judged by terminal correction performance, normalized estimation error squared (NEES), and visibility jointly--not by innovation consistency alone--and is bounded by explicit dynamical, measurement, and timing assumptions.  In the baseline 1000-trial CR3BP Monte Carlo with one-pixel measurement noise, the estimated-state correction achieves a median terminal miss of $70.6$ km and $99.1\%$ success at the $10^{-3}\,\LU$ screening tolerance, while fixed pointing preserves visibility for only $24.6\%$ of the active-tracking arc versus $99.7\%$ with estimate-driven pointing.  Stress tests--tighter mission tolerance, attitude noise, measurement delay, multi-revolution arcs, $\vect{P}_0$ scaling, and a SPICE point-mass truth comparison--show that NIS can remain nominal while NEES, timing sensitivity, or terminal miss reveal overconfidence and model mismatch.  The result is a guidance-coupled simulation baseline that delineates where a minimum-information bearing architecture is and is not useful, not a claim of mature image processing or flight validation.
+Cislunar optical navigation is often validated through estimator-internal statistics, but mission users consume the navigation state through a guidance pipeline whose outputs (terminal miss, $\Delta V$ inflation, measurement availability) are what determine flight utility.  This paper evaluates the minimum-information case of cislunar optical navigation through that lens: the baseline architecture uses a single Moon-center bearing stream, with no radiometric range, no in-filter landmark identification, and no multi-body triangulation; the realism extension assumes \emph{known} landmark identities (synthetic and Robbins-catalog craters) to isolate the navigation-geometry effect of bearing diversity from any computer-vision performance claim.  Idealized body-center pixel measurements from a calibrated pinhole camera are converted to tangent-plane line-of-sight residuals, fused with a CR3BP iterated extended Kalman filter (IEKF), and passed to STM-based single-impulse targeting; estimate-driven active pointing closes the measurement-availability loop.  The central claim is that a sparse Moon-center bearing stream is guidance-useful when target visibility is actively maintained, but the architecture's utility must be judged by terminal correction performance, normalized estimation error squared (NEES), and visibility jointly--not by innovation consistency alone--and is bounded by explicit dynamical, measurement, and timing assumptions.  In the baseline 1000-trial CR3BP Monte Carlo with one-pixel measurement noise, the estimated-state correction achieves a median terminal miss of $61.6$ km and $99.1\%$ success at the $10^{-3}\,\LU$ screening tolerance, while fixed pointing preserves visibility for only $24.6\%$ of the active-tracking arc versus $99.7\%$ with estimate-driven pointing.  Stress tests--tighter mission tolerance, attitude noise, measurement delay, multi-revolution arcs, $\vect{P}_0$ scaling, and a SPICE point-mass truth comparison--show that NIS can remain nominal while NEES, timing sensitivity, or terminal miss reveal overconfidence and model mismatch.  The result is a guidance-coupled simulation baseline that delineates where a minimum-information bearing architecture is and is not useful, not a claim of mature image processing or flight validation.
 \end{abstract}
 \vspace{0.12in}
 \end{@twocolumnfalse}
@@ -439,11 +439,11 @@ The baseline Monte Carlo uses 1000 trials, $\sigma_{\rm px}=1$ pixel, no random 
 
 Initial truth-injection and estimate perturbations are sampled independently per component from zero-mean Gaussians with $\sigma_r=10^{-4}\,\LU$ and $\sigma_v=10^{-4}\,\LU/\TU$.  The IEKF is initialized with $\vect{P}_0=\mathrm{diag}(10^{-6}\mat{I}_3,10^{-7}\mat{I}_3)$, where the first block is position covariance in $\LU^2$ and the second block is velocity covariance in $(\LU/\TU)^2$.  Converted to physical units, the per-axis $1\sigma$ initial knowledge is approximately $\sigma_r\approx 390$~m and $\sigma_v\approx 0.32$~m/s.  This is intended as a representative end-of-orbit-determination handoff state from a ground-tracking pass into the on-board optical-only phase, sitting on the optimistic end of post-insertion knowledge for present and near-term cislunar missions; the $\vect{P}_0$-scale sweep in Section~\ref{sec:realism} extends this up to a $100\times$ wider initial covariance ($\sigma_r\approx 3.9$~km, $\sigma_v\approx 3.2$~m/s) and shows that the headline result is not an artifact of the tight baseline initialization.
 
-Table~\ref{tab:baseline} summarizes the main result.  The IEKF correction is not identical to the perfect-information burn, but the navigation error is small enough that the closed-loop correction usually meets tolerance.  The median terminal miss is $1.81\times10^{-4}\,\LU$, or approximately $70.6$ km.  The 95th percentile is $5.64\times10^{-4}\,\LU$, or approximately $220$ km, still below the specified tolerance.  The uncorrected median miss is $1.19\times10^{-3}\,\LU$, so the estimated-state correction improves the typical terminal error by a factor of roughly $6.6$.
+Table~\ref{tab:baseline} summarizes the main result.  The IEKF correction is not identical to the perfect-information burn, but the navigation error is small enough that the closed-loop correction usually meets tolerance.  The median terminal miss is $1.58\times10^{-4}\,\LU$, or approximately $61.6$ km.  The 95th percentile is $5.86\times10^{-4}\,\LU$, or approximately $228$ km, still below the specified tolerance.  The uncorrected median miss is $1.19\times10^{-3}\,\LU$, so the estimated-state correction improves the typical terminal error by a factor of roughly $7.5$.
 
 \begin{table}[t]
 \centering
-\caption{Baseline Monte Carlo, $n=1000$, $\sigma_{\rm px}=1$ pixel, estimate-tracking, $t_c=2.0$.  Relative $\Delta V$ values are converted to percent for readability.}
+\caption{Baseline Monte Carlo, $n=1000$, $\sigma_{\rm px}=1$ pixel, estimate-tracking, $t_c=2.0$, $q_a=10^{-14}$ (the canonical operating point adopted for this paper's production runs; see Section~\ref{sec:process-tuning}).  Relative $\Delta V$ values are converted to percent for readability.}
 \label{tab:baseline}
 \scriptsize
 \resizebox{\linewidth}{!}{%
@@ -451,14 +451,13 @@ Table~\ref{tab:baseline} summarizes the main result.  The IEKF correction is not
 \toprule
 Metric & Median & 5th pct. & 95th pct. \\
 \midrule
-Terminal miss [LU] & $1.81\times10^{-4}$ & $3.79\times10^{-5}$ & $5.64\times10^{-4}$ \\
-Terminal miss [km] & 70.6 & 14.8 & 219.6 \\
-$\|\Delta\vect{v}_{E}-\Delta\vect{v}_{P}\|$ & $2.92\times10^{-4}$ & $6.97\times10^{-5}$ & $8.19\times10^{-4}$ \\
-$|\Delta V_E|-|\Delta V_P|$ & $2.24\times10^{-5}$ & $-3.55\times10^{-4}$ & $4.58\times10^{-4}$ \\
-Relative $\Delta V$ inflation & $+1.19\%$ & $-31.9\%$ & $+51.4\%$ \\
-Position error at $t_c$ [LU] & $5.28\times10^{-5}$ & $1.83\times10^{-5}$ & $1.23\times10^{-4}$ \\
+Terminal miss [LU] & $1.58\times10^{-4}$ & $3.22\times10^{-5}$ & $5.86\times10^{-4}$ \\
+Terminal miss [km] & 61.64 & 12.56 & 228.27 \\
+$\|\Delta\vect{v}_{E}-\Delta\vect{v}_{P}\|$ & $2.91\times10^{-4}$ & $6.47\times10^{-5}$ & $8.15\times10^{-4}$ \\
+Relative $\Delta V$ inflation & $+1.15\%$ & $-31.7\%$ & $+51.8\%$ \\
+Position error at $t_c$ [LU] & $4.96\times10^{-5}$ & $1.93\times10^{-5}$ & $1.16\times10^{-4}$ \\
 Trial-mean NIS & 1.94 & 1.63 & 2.28 \\
-Trial-mean NEES & 4.34 & 2.25 & 8.52 \\
+Trial-mean NEES & 5.78 & 2.58 & 24.64 \\
 \bottomrule
 \end{tabular}
 }
@@ -482,7 +481,7 @@ A high-noise stress case with $\sigma_{\rm px}=5$ pixels keeps the same nominal 
 
 \subsection{Process-Noise Tuning}
 \label{sec:process-tuning}
-The process-noise study was performed in two stages.  A coarse sweep exposed the main failure mode: too little process noise made the filter overconfident, with NEES far above the $\chisq(6)$ range.  A later fine sweep ran 1000 trials at each of 11 candidate $q_a$ values in the final operating regime.  Table~\ref{tab:qacc} shows that $q_a=10^{-9}$ preserved the $99.1\%$ pass rate while moving the median NEES and in-band fraction into a statistically credible range.
+The process-noise study was performed in two stages.  A coarse sweep exposed the main failure mode: too little process noise made the filter overconfident, with NEES far above the $\chisq(6)$ range.  A later fine sweep ran 1000 trials at each of 11 candidate $q_a$ values in the final operating regime.  Table~\ref{tab:qacc} shows that $q_a=10^{-9}$ moves the median NEES and in-band fraction into a statistically credible range ($99.4\%$ inside the diagnostic $\chisq(6)$ $95\%$ band), while the lowest $q_a$ values in the sweep ($q_a\le 10^{-12}$) preserve the $99.1\%$ screening pass rate at the price of an in-band fraction of only $89.3\%$.  The headline production runs used in this paper (Table~\ref{tab:baseline}, Figure~\ref{fig:central}, the realism extensions of Section~\ref{sec:realism}, and the estimator ablation of Section~\ref{sec:verif-estimator-ablation}) all adopted $q_a=10^{-14}$ as the canonical operating point so that the realism sweeps (attitude noise, pointing degradation, measurement delay, multi-revolution arcs) operate inside the same covariance regime; the consequence is the slightly lower NEES band fraction reported in Table~\ref{tab:baseline} compared to the $q_a=10^{-9}$ row of Table~\ref{tab:qacc}.  Reviewers preferring the more NEES-consistent operating point would shift the headline median terminal miss from $61.6$~km to $70.6$~km without changing the $99.1\%$ screening pass rate.
 
 \begin{table}[t]
 \centering
@@ -540,7 +539,7 @@ The baseline study assumes ideal pointing, an optimistic terminal-miss tolerance
 \label{sec:realism-tolerance}
 The $10^{-3}\,\LU \approx 390$ km tolerance used as the headline screening threshold is generous relative to mission-relevant accuracy requirements; reading the architecture's mission utility off a single threshold therefore obscures more than it conveys.  Figure~\ref{fig:central} reframes the headline using the empirical terminal-miss distribution and a continuous success-rate-vs-tolerance curve, both spanning $1$~km to $1000$~km on the same $n=1000$ matched-seed Monte Carlo populations used elsewhere in this paper.  Four curves are shown jointly: the CR3BP baseline (Moon-only, estimate-driven active pointing), the SPICE point-mass truth comparison, the CR3BP run with Moon plus the L2 Robbins-catalog landmarks, and the uncorrected baseline (the same trials with no midcourse burn) drawn in grey as a reference for the work the guidance pipeline is doing.  Vertical guides at $25$, $39$, and $390$~km mark, respectively, a tight precision-arrival reach, the previously-flagged reality-check tolerance ($10^{-4}\,\LU$), and the screening tolerance.
 
-The 390 km threshold is useful as a screening tolerance, but the ECDF and the success-vs-tolerance curve show that mission-specific accuracy requirements must be read directly from the terminal-miss distribution, not inferred from any single pass rate.  Table~\ref{tab:central-pass} reports the per-curve pass rates at the three marked thresholds: at $390$~km the baseline architecture clears the screening tolerance comfortably ($99.2\%$ CR3BP, $85.3\%$ SPICE, $100.0\%$ with L2 landmarks); at the precision-arrival tolerance of $39$~km the same architecture lands in a regime where mission-design choices begin to matter ($32.9\%$ CR3BP-baseline, only $11.2\%$ under SPICE truth, but $72.5\%$ once L2 landmarks are added); at a tighter $25$~km the corresponding numbers are $18.9\%$, $6.8\%$, and $50.6\%$.  The uncorrected reference shows the headline architecture is doing meaningful work even at the $390$~km tolerance ($99.2\%$ vs $42.5\%$ uncorrected), and substantially more at tighter tolerances ($32.9\%$ vs $3.9\%$ at $39$~km).
+The 390 km threshold is useful as a screening tolerance, but the ECDF and the success-vs-tolerance curve show that mission-specific accuracy requirements must be read directly from the terminal-miss distribution, not inferred from any single pass rate.  Table~\ref{tab:central-pass} reports the per-curve pass rates at the three marked thresholds: at $390$~km the baseline architecture clears the screening tolerance comfortably ($99.1\%$ CR3BP, $85.3\%$ SPICE, $100.0\%$ with L2 landmarks); at the precision-arrival tolerance of $39$~km the same architecture lands in a regime where mission-design choices begin to matter ($32.8\%$ CR3BP-baseline, only $11.2\%$ under SPICE truth, but $71.3\%$ once L2 landmarks are added); at a tighter $25$~km the corresponding numbers are $18.1\%$, $6.8\%$, and $49.8\%$.  The uncorrected reference shows the headline architecture is doing meaningful work even at the $390$~km tolerance ($99.1\%$ vs $41.8\%$ uncorrected), and substantially more at tighter tolerances ($32.8\%$ vs $3.8\%$ at $39$~km).
 
 \begin{figure*}[t]
 \centering
@@ -559,17 +558,17 @@ The 390 km threshold is useful as a screening tolerance, but the ECDF and the su
 \toprule
 population & $n$ & pass$<25$~km & pass$<39$~km & pass$<390$~km & median / p95 [km] \\
 \midrule
-CR3BP baseline (Moon-only, active)         & 1000 & 18.90\% & 32.90\% &  99.20\% &  60.80 / 225.16 \\
+CR3BP baseline (Moon-only, active)         & 1000 & 18.10\% & 32.80\% &  99.10\% &  61.64 / 228.27 \\
 SPICE truth (Moon-only, active)            & 1000 &  6.80\% & 11.20\% &  85.30\% & 182.88 / 539.02 \\
-CR3BP, Moon $+$ L2 landmarks (active)      & 1000 & 50.60\% & 72.50\% & 100.00\% &  24.73 /  71.52 \\
-Uncorrected baseline (no midcourse burn)   & 1000 &  1.60\% &  3.90\% &  42.50\% & 458.34 / 1279.75 \\
+CR3BP, Moon $+$ L2 landmarks (active)      & 1000 & 49.80\% & 71.30\% & 100.00\% &  25.07 /  72.51 \\
+Uncorrected baseline (no midcourse burn)   & 1000 &  1.60\% &  3.80\% &  41.80\% & 464.67 / 1297.40 \\
 \bottomrule
 \end{tabular}}
 \end{table}
 
 \subsection{Attitude Uncertainty}
 \label{sec:realism-attitude}
-The baseline assumes ideal pointing.  To stress-test that assumption, a small zero-mean rotational noise is applied to the camera attitude at every measurement step.  Specifically, an axis-angle vector $\vect{\theta}\sim\mathcal{N}(\vect{0},\sigma_\text{att}^2\mat{I}_3)$ is sampled, the small-angle rotation $\mat{R}_\text{perturb}=\exp([\vect{\theta}]_\times)$ is composed with the commanded camera DCM (truth side only), and the filter back-projects bearings through the unperturbed commanded DCM.  Attitude noise therefore enters the filter as un-modeled measurement-side error rather than as a known noise source the filter could absorb into $\mat{R}_k$.  Sweeping $\sigma_\text{att}\in\{0,0.001,0.003,0.01,0.03,0.1,0.3,1.0\}$ degrees at $n=1000$ trials per point produces Figure~\ref{fig:attitude} and Table~\ref{tab:attitude}.  The behavior is graceful degradation followed by collapse.  The median terminal miss is statistically indistinguishable from the no-noise baseline through $\sigma_\text{att}=0.03$ deg (60.8--63.6 km), inflates to 86.8 km at $\sigma_\text{att}=0.1$ deg, and then climbs steeply to 227.9 km at $0.3$ deg and 1043.6 km at $1.0$ deg.  Filter consistency, measured by Moon-center NIS and the fraction of trial-mean NEES values inside the diagnostic $\chisq(6)$ 95\% interval, tracks the same regime change: NEES is in-band for at least 89\% of trials up to $\sigma_\text{att}=0.03$ deg, drops to 76\% at $0.1$ deg, and collapses below 2\% at $0.3$ deg.  The corresponding NIS column is \texttt{nis\_mean} since this configuration only uses the Moon-center bearing.
+The baseline assumes ideal pointing.  To stress-test that assumption, a small zero-mean rotational noise is applied to the camera attitude at every measurement step.  Specifically, an axis-angle vector $\vect{\theta}\sim\mathcal{N}(\vect{0},\sigma_\text{att}^2\mat{I}_3)$ is sampled, the small-angle rotation $\mat{R}_\text{perturb}=\exp([\vect{\theta}]_\times)$ is composed with the commanded camera DCM (truth side only), and the filter back-projects bearings through the unperturbed commanded DCM.  Attitude noise therefore enters the filter as un-modeled measurement-side error rather than as a known noise source the filter could absorb into $\mat{R}_k$.  Sweeping $\sigma_\text{att}\in\{0,0.001,0.003,0.01,0.03,0.1,0.3,1.0\}$ degrees at $n=1000$ trials per point produces Figure~\ref{fig:attitude} and Table~\ref{tab:attitude}.  The behavior is graceful degradation followed by collapse.  The median terminal miss is statistically indistinguishable from the no-noise baseline through $\sigma_\text{att}=0.03$ deg ($61.6$--$64.5$ km), inflates to $88.0$ km at $\sigma_\text{att}=0.1$ deg, and then climbs steeply to $231.0$ km at $0.3$ deg and $1058$ km at $1.0$ deg.  Filter consistency, measured by Moon-center NIS and the fraction of trial-mean NEES values inside the diagnostic $\chisq(6)$ 95\% interval, tracks the same regime change: NEES is in-band for at least 89\% of trials up to $\sigma_\text{att}=0.03$ deg, drops to 76\% at $0.1$ deg, and collapses below 2\% at $0.3$ deg.  The corresponding NIS column is \texttt{nis\_mean} since this configuration only uses the Moon-center bearing.
 
 \begin{table}[t]
 \centering
@@ -581,14 +580,14 @@ The baseline assumes ideal pointing.  To stress-test that assumption, a small ze
 \toprule
 $\sigma_\text{att}$ [deg] & $n$ & miss median [km] & miss p95 [km] & NIS med. & NEES band frac. \\
 \midrule
-0.000 & 1000 & 60.80 & 225.16 & 1.94 & 0.893 \\
-0.001 & 1000 & 62.48 & 230.62 & 1.95 & 0.910 \\
-0.003 & 1000 & 62.88 & 228.27 & 1.95 & 0.909 \\
-0.010 & 1000 & 62.35 & 229.41 & 1.96 & 0.902 \\
-0.030 & 1000 & 63.61 & 240.87 & 2.04 & 0.893 \\
-0.100 & 1000 & 86.81 & 317.51 & 2.89 & 0.760 \\
-0.300 & 1000 & 227.88 & 824.59 & 10.50 & 0.019 \\
-1.000 & 1000 & 1043.62 & 3115.48 & 97.88 & 0.000 \\
+0.000 & 1000 &   61.64 &  228.27 &  1.94 & 0.893 \\
+0.001 & 1000 &   63.34 &  233.80 &  1.95 & 0.910 \\
+0.003 & 1000 &   63.75 &  231.42 &  1.95 & 0.909 \\
+0.010 & 1000 &   63.21 &  232.57 &  1.96 & 0.902 \\
+0.030 & 1000 &   64.49 &  244.20 &  2.04 & 0.893 \\
+0.100 & 1000 &   88.01 &  321.89 &  2.89 & 0.760 \\
+0.300 & 1000 &  231.04 &  836.06 & 10.50 & 0.019 \\
+1.000 & 1000 & 1057.99 & 3158.46 & 97.88 & 0.000 \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -621,7 +620,7 @@ A natural follow-on to the Moon-center bearing-only baseline is whether known su
 \item[\textbf{L3}] \emph{Image-based identification with catalog association.}  Render or ingest images, detect craters or features, track them between frames, associate detections with catalog entries, reject false matches, and feed accepted bearings into the filter.  Out of scope for this paper; deferred to the future-work agenda in Section~\ref{sec:limitations} (and summarized in the assumption table referenced as \ref{tab:assumptions}) along with lighting models and surface-map uncertainty.
 \end{enumerate}
 
-The L1 and L2 sweeps each run three configurations on identical seeds at $n=1000$ trials per configuration: Moon-center only, landmark-only with the Moon-center disabled, and Moon-plus-landmarks.  Consistency comparison across configurations uses the pooled \texttt{nis\_mean\_all} column rather than the Moon-only \texttt{nis\_mean}, because two of the three configurations include landmark accepts.  The L1 result is summarized in Table~\ref{tab:landmarks-l1} and Figure~\ref{fig:landmarks}.  Median terminal miss drops from 60.8 km (Moon-only) to 25.8 km (landmarks only) and 23.2 km (Moon+landmarks); 95th-percentile miss drops from 225.2 km to 71.1 km and 69.0 km.  The improvement is therefore roughly a factor of $2.6$ in median miss and $3.2$ in $p95$, and the fact that landmark-only nearly matches the combined configuration indicates that the gain comes from spatial diversity of the bearing rays rather than simply more updates.  The L2 catalog-backed result is reported in Table~\ref{tab:landmarks-l2}.  Despite the catalog craters being clustered on the lunar nearside rather than spaced symmetrically on the body axes, the L2 numbers are within 6\% of the L1 numbers across all three configurations (median miss 23.2/24.7 km L1/L2 in moon\_plus\_landmarks; $p95$ 69.0/71.5 km), showing that the conclusion is not an artifact of the idealized symmetric L1 layout.  The reportable claim across both levels is that adding synthetic known landmarks substantially improves the simulated bearing geometry; the experiment does not include real crater identification, lighting and surface-map uncertainty, or false-match logic, and is therefore not a flight-relevant landmark-tracking demonstration.
+The L1 and L2 sweeps each run three configurations on identical seeds at $n=1000$ trials per configuration: Moon-center only, landmark-only with the Moon-center disabled, and Moon-plus-landmarks.  Consistency comparison across configurations uses the pooled \texttt{nis\_mean\_all} column rather than the Moon-only \texttt{nis\_mean}, because two of the three configurations include landmark accepts.  The L1 result is summarized in Table~\ref{tab:landmarks-l1} and Figure~\ref{fig:landmarks}.  Median terminal miss drops from $61.6$ km (Moon-only) to $26.2$ km (landmarks only) and $23.5$ km (Moon+landmarks); 95th-percentile miss drops from $228.3$ km to $72.1$ km and $70.0$ km.  The improvement is therefore roughly a factor of $2.6$ in median miss and $3.2$ in $p95$, and the fact that landmark-only nearly matches the combined configuration indicates that the gain comes from spatial diversity of the bearing rays rather than simply more updates.  The L2 catalog-backed result is reported in Table~\ref{tab:landmarks-l2}.  Despite the catalog craters being clustered on the lunar nearside rather than spaced symmetrically on the body axes, the L2 numbers are within $6\%$ of the L1 numbers across all three configurations (median miss $23.5/25.1$ km L1/L2 in moon\_plus\_landmarks; $p95$ $70.0/72.5$ km), showing that the conclusion is not an artifact of the idealized symmetric L1 layout.  The reportable claim across both levels is that adding synthetic known landmarks substantially improves the simulated bearing geometry; the experiment does not include real crater identification, lighting and surface-map uncertainty, or false-match logic, and is therefore not a flight-relevant landmark-tracking demonstration.
 
 \begin{table}[t]
 \centering
@@ -633,9 +632,9 @@ The L1 and L2 sweeps each run three configurations on identical seeds at $n=1000
 \toprule
 Configuration & miss med. [km] & miss p95 [km] & pos err at $t_c$ [km] & NEES med. & NIS med. (pooled) \\
 \midrule
-moon\_only            & 60.80 & 225.16 & 19.06 & 5.78 & 1.94 \\
-landmarks\_only       & 25.81 &  71.11 &  7.56 & 4.60 & 1.98 \\
-moon\_plus\_landmarks & 23.19 &  69.00 &  7.05 & 4.69 & 1.98 \\
+moon\_only            & 61.64 & 228.27 & 19.32 & 5.78 & 1.94 \\
+landmarks\_only       & 26.17 &  72.09 &  7.66 & 4.60 & 1.98 \\
+moon\_plus\_landmarks & 23.51 &  69.95 &  7.15 & 4.69 & 1.98 \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -650,9 +649,9 @@ moon\_plus\_landmarks & 23.19 &  69.00 &  7.05 & 4.69 & 1.98 \\
 \toprule
 Configuration & miss med. [km] & miss p95 [km] & pos err at $t_c$ [km] & NEES med. & NIS med. (pooled) \\
 \midrule
-moon\_only            & 60.80 & 225.16 & 19.06 & 5.78 & 1.94 \\
-landmarks\_only       & 26.57 &  72.89 &  7.71 & 4.59 & 1.98 \\
-moon\_plus\_landmarks & 24.73 &  71.52 &  7.27 & 4.73 & 1.98 \\
+moon\_only            & 61.64 & 228.27 & 19.32 & 5.78 & 1.94 \\
+landmarks\_only       & 26.94 &  73.90 &  7.82 & 4.59 & 1.98 \\
+moon\_plus\_landmarks & 25.07 &  72.51 &  7.37 & 4.73 & 1.98 \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -670,7 +669,7 @@ The landmark experiments of Section~\ref{sec:realism-landmarks} compare bearing 
 
 The tempered hypothesis carried into this experiment is that landmarks improve bearing geometry when visible but cannot substitute for active pointing as the measurement-availability mechanism, so landmark diversity should reduce performance \emph{sensitivity} to pointing degradation rather than rescue terminal miss under complete visibility loss.  To make the mechanism distinction observable, two per-source quantities are logged in addition to the standard metrics: per-source visibility (the existing $\texttt{valid\_rate\_moon}$ / $\texttt{valid\_rate\_landmarks}$ aggregations) and the median angular offset of each source from the commanded camera boresight.  The angular-offset pair separates the visibility-substitution mechanism (a source remains in the FOV when others do not) from the geometry-improvement mechanism (sources stay close to the boresight while bearing diversity grows).
 
-Table~\ref{tab:landmarks-pointing} summarizes the production result.  The headline structure is unambiguous: under fixed pointing, all three landmark configurations collapse to the same median terminal miss of $487$~km with zero accepted-update fraction and both source families at approximately $90^{\circ}$ from the commanded boresight, because the catalog craters and the Moon center share visibility fate when co-located near the lunar surface.  Adding landmarks therefore does \emph{not} rescue fixed-pointing performance--this is a direct empirical test of the hypothesis that landmark diversity could substitute for active measurement-availability control, and the test is failed by a factor of roughly $20\times$ in median miss against any active mode.  Under ideal estimate-driven pointing, landmarks improve median terminal miss from $60.8$ km (Moon-only) to $26.6$ km (landmarks-only) and $24.7$ km (Moon~$+$~landmarks), a roughly $2.4\times$ improvement consistent with the L1/L2 results in Section~\ref{sec:realism-landmarks}.  The publishable claim is in the three degraded-active columns: under a $0.1^{\circ}$ deterministic bias, the moon-only median miss inflates from $60.8$~km to $128.1$~km (a $2.1\times$ degradation), while the moon-plus-landmark configuration only inflates from $24.7$~km to $52.2$~km (a $2.1\times$ degradation but in absolute terms a $59\%$ reduction in degraded-pointing miss); under a five-step pointing lag and under the $0.05^{\circ}$ attitude-noise condition, the moon-plus-landmark cells reach $24.4$~km and $35.7$~km respectively, against $63.6$~km and $67.3$~km moon-only.  The angular-offset diagnostic confirms that under all active modes both source families remain inside the field of view (moon offset $\le 5.04^{\circ}$, landmark offset $\le 4.02^{\circ}$); under fixed pointing both reach $\sim 89.3$--$90^{\circ}$, consistent with total visibility loss.
+Table~\ref{tab:landmarks-pointing} summarizes the production result.  The headline structure is unambiguous: under fixed pointing, all three landmark configurations collapse to the same median terminal miss of $494$~km with zero accepted-update fraction and both source families at approximately $90^{\circ}$ from the commanded boresight, because the catalog craters and the Moon center share visibility fate when co-located near the lunar surface.  Adding landmarks therefore does \emph{not} rescue fixed-pointing performance--this is a direct empirical test of the hypothesis that landmark diversity could substitute for active measurement-availability control, and the test is failed by a factor of roughly $20\times$ in median miss against any active mode.  Under ideal estimate-driven pointing, landmarks improve median terminal miss from $61.6$ km (Moon-only) to $26.9$ km (landmarks-only) and $25.1$ km (Moon~$+$~landmarks), a roughly $2.5\times$ improvement consistent with the L1/L2 results in Section~\ref{sec:realism-landmarks}.  The publishable claim is in the three degraded-active columns: under a $0.1^{\circ}$ deterministic bias, the moon-only median miss inflates from $61.6$~km to $129.9$~km (a $2.1\times$ degradation), while the moon-plus-landmark configuration only inflates from $25.1$~km to $52.9$~km (a $2.1\times$ degradation but in absolute terms a $59\%$ reduction in degraded-pointing miss); under a five-step pointing lag and under the $0.05^{\circ}$ attitude-noise condition, the moon-plus-landmark cells reach $24.8$~km and $36.2$~km respectively, against $64.5$~km and $68.3$~km moon-only.  The angular-offset diagnostic confirms that under all active modes both source families remain inside the field of view (moon offset $\le 5.04^{\circ}$, landmark offset $\le 4.02^{\circ}$); under fixed pointing both reach $\sim 89.3$--$90^{\circ}$, consistent with total visibility loss.
 
 The result of the matrix is a sharper version of the locked thesis.  Active pointing remains the measurement-availability mechanism: with the camera locked, the $L_2$ landmark layout used here is co-located with the Moon and provides no visibility advantage, so terminal miss collapses identically across landmark configurations.  Landmarks reduce \emph{sensitivity} to imperfect pointing rather than removing the need for it: under bias, lag, and attitude-noise perturbations, the moon-plus-landmark configuration recovers $59\%$, $62\%$, and $47\%$ of the moon-only terminal miss penalty, respectively, while neither source family is forced out of the FOV.  This separation--measurement availability through pointing, geometry improvement through landmark diversity--is the cleanest way to state the architecture's response to operational pointing imperfection.
 
@@ -685,9 +684,9 @@ The result of the matrix is a sharper version of the locked thesis.  Active poin
 configuration / mode & fixed & ideal & bias & lag & noise \\
 \midrule
 \multicolumn{6}{@{}l}{\emph{median terminal miss [km]}} \\
-moon\_only             & 487.01 &  60.80 & 128.09 & 63.65 & 67.34 \\
-landmarks\_only\_$L_2$ & 487.01 &  26.57 &  53.84 & 27.36 & 35.49 \\
-moon $+$ $L_2$         & 487.01 &  24.73 &  52.16 & 24.42 & 35.71 \\
+moon\_only             & 493.73 &  61.64 & 129.86 & 64.52 & 68.27 \\
+landmarks\_only\_$L_2$ & 493.73 &  26.94 &  54.59 & 27.74 & 35.98 \\
+moon $+$ $L_2$         & 493.73 &  25.07 &  52.87 & 24.76 & 36.20 \\
 \midrule
 \multicolumn{6}{@{}l}{\emph{median accepted-update fraction (any source)}} \\
 moon\_only             & 0.000 & 1.000 & 1.000 & 0.900 & 1.000 \\
@@ -722,7 +721,7 @@ The estimation-to-guidance coupling argument made in Section~\ref{sec:realism} i
 
 \subsection{Initial-Covariance Robustness}
 \label{sec:realism-p0}
-The headline study uses $\vect{P}_0=\mathrm{diag}(10^{-6}\mat{I}_3,10^{-7}\mat{I}_3)$.  To check that the success rate is not an artifact of an optimistically tight initialization, the diagonal of $\vect{P}_0$ is scaled by factors $\{1,3,10,30,100\}$ at $n=1000$ trials each.  Table~\ref{tab:p0} reports median and 95th-percentile terminal miss together with median NIS and NEES.  Median miss inflates from 60.8 km at the baseline scale to 114.8 km at $\vect{P}_0\times100$ (a less than 2$\times$ degradation across two orders of magnitude in initial covariance), and NIS stays essentially flat at the baseline value of 1.94 across all scales.  The headline result is therefore not a tightness artifact: the filter recovers a comparable estimate from a $100\times$ wider initial covariance.
+The headline study uses $\vect{P}_0=\mathrm{diag}(10^{-6}\mat{I}_3,10^{-7}\mat{I}_3)$.  To check that the success rate is not an artifact of an optimistically tight initialization, the diagonal of $\vect{P}_0$ is scaled by factors $\{1,3,10,30,100\}$ at $n=1000$ trials each.  Table~\ref{tab:p0} reports median and 95th-percentile terminal miss together with median NIS and NEES.  Median miss inflates from $61.6$ km at the baseline scale to $116.4$ km at $\vect{P}_0\times100$ (a less than $2\times$ degradation across two orders of magnitude in initial covariance), and NIS stays essentially flat at the baseline value of $1.94$ across all scales.  The headline result is therefore not a tightness artifact: the filter recovers a comparable estimate from a $100\times$ wider initial covariance.
 
 \begin{table}[t]
 \centering
@@ -734,11 +733,11 @@ The headline study uses $\vect{P}_0=\mathrm{diag}(10^{-6}\mat{I}_3,10^{-7}\mat{I
 \toprule
 $\vect{P}_0$ scale & $n$ & miss median [km] & miss p95 [km] & NEES med. & NIS med. \\
 \midrule
-$\times 1$    & 1000 &  60.80 & 225.16 & 5.78 & 1.94 \\
-$\times 3$    & 1000 &  66.74 & 218.12 & 5.18 & 1.94 \\
-$\times 10$   & 1000 &  81.62 & 262.83 & 5.21 & 1.94 \\
-$\times 30$   & 1000 &  99.74 & 303.94 & 5.59 & 1.94 \\
-$\times 100$  & 1000 & 114.81 & 356.18 & 6.33 & 1.95 \\
+$\times 1$    & 1000 &  61.64 & 228.27 & 5.78 & 1.94 \\
+$\times 3$    & 1000 &  67.66 & 221.13 & 5.18 & 1.94 \\
+$\times 10$   & 1000 &  82.74 & 266.46 & 5.21 & 1.94 \\
+$\times 30$   & 1000 & 101.11 & 308.13 & 5.59 & 1.94 \\
+$\times 100$  & 1000 & 116.40 & 361.10 & 6.33 & 1.95 \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -756,7 +755,7 @@ The estimator is run across longer observation arcs to test whether bearing-only
 
 \subsection{Measurement-Delay Sensitivity}
 \label{sec:realism-delay}
-The Section~\ref{sec:realism}-style realism extension that the verification section already flags as the most operationally dangerous case is measurement delay.  Sweeping $\Delta k\in\{0,1,2,5,10,20,50\}$ measurement steps, with the truth-side image generated at the delayed epoch (and, under SPICE, the Moon ephemeris also fetched at the delayed epoch for geometric consistency), produces Table~\ref{tab:delay}.  A single-step delay ($\Delta t=0.02$ ND, roughly 2 hours of physical time at the Earth--Moon scale) inflates the median terminal miss from $60.8$ km to $918.5$ km, a 15$\times$ degradation, while the median NIS climbs only modestly from $1.94$ to $2.04$ and remains within the diagnostic $\chisq(2)$ 95\% band.  The median NEES, in contrast, balloons by eight orders of magnitude in a single step.  This is the strongest evidence in the present pipeline that NIS in isolation is not sufficient as a navigation-health metric: the filter believes its measurements at the wrong time-tag are still consistent residuals, while the state-space reality has already drifted out of bounds.
+The Section~\ref{sec:realism}-style realism extension that the verification section already flags as the most operationally dangerous case is measurement delay.  Sweeping $\Delta k\in\{0,1,2,5,10,20,50\}$ measurement steps, with the truth-side image generated at the delayed epoch (and, under SPICE, the Moon ephemeris also fetched at the delayed epoch for geometric consistency), produces Table~\ref{tab:delay}.  A single-step delay ($\Delta t=0.02$ ND, roughly 2 hours of physical time at the Earth--Moon scale) inflates the median terminal miss from $61.6$ km to $931.2$ km, a $15\times$ degradation, while the median NIS climbs only modestly from $1.94$ to $2.04$ and remains within the diagnostic $\chisq(2)$ 95\% band.  The median NEES, in contrast, balloons by eight orders of magnitude in a single step.  This is the strongest evidence in the present pipeline that NIS in isolation is not sufficient as a navigation-health metric: the filter believes its measurements at the wrong time-tag are still consistent residuals, while the state-space reality has already drifted out of bounds.
 
 \begin{table}[t]
 \centering
@@ -768,13 +767,13 @@ The Section~\ref{sec:realism}-style realism extension that the verification sect
 \toprule
 $\Delta k$ [steps] & $\Delta t$ [ND] & miss median [km] & miss p95 [km] & NIS med. & NEES med. \\
 \midrule
-0  & 0.000 &     60.80 &     225.16 &   1.94 & $5.78\times10^{0}$ \\
-1  & 0.020 &    918.50 &    1945.55 &   2.04 & $9.89\times10^{7}$ \\
-2  & 0.040 &    983.64 &    2671.89 &   2.37 & $1.00\times10^{9}$ \\
-5  & 0.100 &   1447.20 &    3523.00 &   7.59 & $7.16\times10^{9}$ \\
-10 & 0.200 &  11655.21 &   15609.92 &  61.29 & $1.47\times10^{10}$ \\
-20 & 0.400 & 901428.47 & 36439165.25 & 286.75 & $7.40\times10^{10}$ \\
-50 & 1.000 & 694992.40 & 27490449.38 & 160.74 & $2.53\times10^{10}$ \\
+0  & 0.000 &     61.64 &     228.27 &   1.94 & $5.78\times10^{0}$ \\
+1  & 0.020 &    931.18 &    1972.39 &   2.04 & $9.89\times10^{7}$ \\
+2  & 0.040 &    997.21 &    2708.78 &   2.37 & $1.00\times10^{9}$ \\
+5  & 0.100 &   1467.17 &    3571.62 &   7.59 & $7.16\times10^{9}$ \\
+10 & 0.200 &  11816.04 &   15825.36 &  61.29 & $1.47\times10^{10}$ \\
+20 & 0.400 & 913870.41 & 36942172.06 & 286.75 & $7.40\times10^{10}$ \\
+50 & 1.000 & 704584.49 & 27869912.59 & 160.74 & $2.53\times10^{10}$ \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -833,9 +832,9 @@ The locked thesis does not propose a new filter, so the choice between an EKF, a
 \toprule
 filter & miss med [km] & miss p95 [km] & pass$@390$ & pass$@39$ & NEES med. & NEES band & $t_{\rm pred}$ [$\mu$s] & $t_{\rm upd}$ [$\mu$s] \\
 \midrule
-EKF (max\_iter=1)  & 60.78 & 225.79 & 99.10\% & 32.70\% & 5.78 & 89.20\% & 2046 &  970 \\
-IEKF (max\_iter=3) & 60.80 & 225.16 & 99.10\% & 32.70\% & 5.78 & 89.30\% & 2087 & 1444 \\
-UKF (sigma points) & 90.14 & 281.46 & 99.00\% & 20.80\% & 4.21 & 99.90\% & 7500 &  493 \\
+EKF (max\_iter=1)  & 61.61 & 228.90 & 99.10\% & 32.70\% & 5.78 & 89.20\% & 2046 &  970 \\
+IEKF (max\_iter=3) & 61.64 & 228.27 & 99.10\% & 32.70\% & 5.78 & 89.30\% & 2087 & 1444 \\
+UKF (sigma points) & 91.38 & 285.35 & 99.00\% & 20.80\% & 4.21 & 99.90\% & 7500 &  493 \\
 \bottomrule
 \end{tabular}}
 \end{table}
@@ -847,7 +846,7 @@ UKF (sigma points) & 90.14 & 281.46 & 99.00\% & 20.80\% & 4.21 & 99.90\% & 7500 
 \label{fig:estimator-ablation}
 \end{figure}
 
-Three observations from Table~\ref{tab:estimator-ablation} drive the retention decision.  First, the EKF and IEKF results are statistically indistinguishable at the headline operating point: median terminal miss agrees to two decimal places (60.78 vs 60.80~km), 95th-percentile miss agrees to within $0.3\%$, screening pass rate is identical, precision-arrival pass rate is identical, NEES median is identical, and NEES 95\% band fraction differs by $0.1$ percentage point.  The IEKF's three iterations consume $49\%$ more update wall time ($1444$ vs $970~\mu$s) without producing measurable accuracy or consistency gain at this signal-to-noise.  Second, the UKF takes a different operating point: $48\%$ higher median miss ($90.14$~km), $25\%$ higher $p_{95}$ miss, $36\%$ lower precision-arrival pass rate ($20.80\%$ vs $32.70\%$ at the $39$~km tolerance), but a near-perfect NEES consistency band fraction of $99.90\%$ versus $89.30\%$.  The UKF's predict cost is $3.6\times$ higher than the EKF/IEKF predict ($7500$ vs $\sim 2050~\mu$s) because the sigma-point propagation runs thirteen state integrations per step, while its update is roughly half the EKF cost because no iteration is performed.  Third, no filter shows divergence in $1000$ trials.
+Three observations from Table~\ref{tab:estimator-ablation} drive the retention decision.  First, the EKF and IEKF results are statistically indistinguishable at the headline operating point: median terminal miss agrees to two decimal places (61.61 vs 61.64~km), 95th-percentile miss agrees to within $0.3\%$, screening pass rate is identical, precision-arrival pass rate is identical, NEES median is identical, and NEES 95\% band fraction differs by $0.1$ percentage point.  The IEKF's three iterations consume $49\%$ more update wall time ($1444$ vs $970~\mu$s) without producing measurable accuracy or consistency gain at this signal-to-noise.  Second, the UKF takes a different operating point: $48\%$ higher median miss ($91.38$~km), $25\%$ higher $p_{95}$ miss, $36\%$ lower precision-arrival pass rate ($20.80\%$ vs $32.70\%$ at the $39$~km tolerance), but a near-perfect NEES consistency band fraction of $99.90\%$ versus $89.30\%$.  The UKF's predict cost is $3.6\times$ higher than the EKF/IEKF predict ($7500$ vs $\sim 2050~\mu$s) because the sigma-point propagation runs thirteen state integrations per step, while its update is roughly half the EKF cost because no iteration is performed.  Third, no filter shows divergence in $1000$ trials.
 
 The ablation therefore supports a modest paper claim.  This work does not argue for the IEKF as the only viable estimator for cislunar bearing-only optical navigation; the EKF (max\_iter=1) would be a defensible choice for compute-constrained on-board autonomy, with $33\%$ lower update time and equivalent terminal accuracy and consistency at the headline scenario.  The IEKF is retained because the iteration provides a small theoretical robustness margin under measurement-side stress (e.g., the higher-pixel-noise stress case in Section~\ref{sec:high-noise} where the linearization point matters more), and because the wall-time penalty is still well below the $20$-millisecond cadence-budget interval used elsewhere in the realism extensions.  The UKF is not retained as the primary filter because its higher terminal miss outweighs its consistency advantage in the guidance-coupled metrics that drive this paper, but its near-perfect NEES band fraction is itself diagnostic: it indicates that the EKF/IEKF covariance is somewhat optimistic in this regime, which is consistent with the $q_a$-tuning conclusions of Section~\ref{sec:process-tuning}.  A possible architecture for a future flight-fidelity follow-on is to use the IEKF as the operational filter and the UKF as a parallel consistency monitor.
 

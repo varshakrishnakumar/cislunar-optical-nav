@@ -42,9 +42,13 @@ from _common import ensure_src_on_path, repo_path
 
 ensure_src_on_path()
 
+from _paper_constants import (  # noqa: E402
+    KM_PER_LU as _KM_PER_LU,
+    THRESHOLD_SCREENING_KM, THRESHOLD_PRECISION_KM, THRESHOLD_TIGHT_KM,
+)
 
-_KM_PER_LU = 384_400.0
-_THRESHOLDS_KM_REPORT = (25.0, 39.0, 390.0)
+
+_THRESHOLDS_KM_REPORT = (THRESHOLD_TIGHT_KM, THRESHOLD_PRECISION_KM, THRESHOLD_SCREENING_KM)
 _THRESHOLDS_KM_GRID   = np.logspace(0.0, 3.0, 121)  # 1 → 1000 km, 121 points
 
 
@@ -114,14 +118,31 @@ def main() -> None:
     out_dir = repo_path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Source CSVs (all n=1000 except where noted).
-    cr3bp_csv     = repo_path("results/mc/phase_d_production/06c_baseline_results.csv")
-    spice_csv     = repo_path("results/mc/phase_d_production_spice/06c_baseline_results.csv")
-    landmarks_csv = repo_path("results/mc/phase_f_landmarks_pointing/06r_landmarks_under_pointing_degradation.csv")
+    # Source CSVs. Prefer the committed copies in paper_artifacts/csv/
+    # (reviewer-grade reproduction on a fresh clone). Fall back to the
+    # raw production trees under results/mc/ if the committed copies are
+    # missing (developer workflow with local re-runs).
+    def _pick(*candidates: str):
+        for c in candidates:
+            p = repo_path(c)
+            if p.exists():
+                return p
+        raise SystemExit(
+            "missing source CSV; tried:\n  " + "\n  ".join(candidates)
+        )
 
-    for p in (cr3bp_csv, spice_csv, landmarks_csv):
-        if not p.exists():
-            raise SystemExit(f"missing source CSV: {p}")
+    cr3bp_csv     = _pick(
+        "paper_artifacts/csv/phase_d_production__06c_baseline_results.csv",
+        "results/mc/phase_d_production/06c_baseline_results.csv",
+    )
+    spice_csv     = _pick(
+        "paper_artifacts/csv/phase_d_production_spice__06c_baseline_results.csv",
+        "results/mc/phase_d_production_spice/06c_baseline_results.csv",
+    )
+    landmarks_csv = _pick(
+        "paper_artifacts/csv/phase_f_landmarks_pointing__06r_landmarks_under_pointing_degradation.csv",
+        "results/mc/phase_f_landmarks_pointing/06r_landmarks_under_pointing_degradation.csv",
+    )
 
     # ----- Load curves -----
     c1 = _load_phase_d_csv(cr3bp_csv, miss_col="miss_ekf", scale_to_km=True)

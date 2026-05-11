@@ -65,16 +65,21 @@ If any of these raise, fix that before attempting production.
 ## 3. Rebuild all paper figures from existing CSVs (≈ 1 s)
 
 The central ECDF (Figure 12, Table 5) and the experiment manifest
-require no new Monte Carlo — they consume CSVs in `results/mc/phase_d_*/`
-and `results/mc/phase_f_*/` that ship with the repository:
+require no new Monte Carlo — they consume the canonical CSVs in
+`paper_artifacts/csv/` that ship with the repository:
 
 ```bash
 python scripts/06t_success_ecdf_central.py
 ```
 
-If you have re-run a production driver and want the central figure to
-pick up the new numbers, re-invoke the same command — `06t` re-reads
-the CSVs unconditionally.
+`06t` reads from `paper_artifacts/csv/` by default. If you have re-run
+a production driver under `results/mc/` and want the central figure to
+pick up the new numbers, either copy the new CSVs into
+`paper_artifacts/csv/` or delete the existing ones — the driver will
+fall back to the local `results/mc/` tree automatically.
+
+See [`paper_artifacts/README.md`](paper_artifacts/README.md) for the
+canonical CSV bundle and the per-CSV table/figure backing.
 
 ## 4. Rerun production Monte Carlo (≈ 3 h wall on 8 cores, plus 8 h SPICE)
 
@@ -130,14 +135,23 @@ the manuscript exactly (or to the rounding shown):
 
 | metric | expected value |
 |--------|---------------:|
-| Baseline median terminal miss | 60.80 km |
+| Baseline median terminal miss | 61.64 km |
+| Baseline p95 terminal miss    | 228.27 km |
 | Baseline pass rate @ 390 km   | 99.10% |
-| Baseline pass rate @ 39 km    | 32.90% |
+| Baseline pass rate @ 39 km    | 32.80% |
+| Baseline pass rate @ 25 km    | 18.10% |
 | SPICE-truth median miss       | 182.88 km |
-| Moon + L2 landmarks median    | 24.73 km |
-| Fixed-pointing collapse       | 487.01 km |
-| EKF / IEKF / UKF median miss  | 60.78 / 60.80 / 90.14 km |
+| Moon + L2 landmarks median    | 25.07 km |
+| Fixed-pointing collapse miss  | 493.73 km |
+| EKF / IEKF / UKF median miss  | 61.61 / 61.64 / 91.38 km |
 | UKF NEES band fraction        | 99.90% |
+
+These match the canonical CSVs in `paper_artifacts/csv/` and the
+manuscript exactly. The conversion `1 LU = 389,703.2648 km` and the
+canonical `q_a = 1.0e-14` operating point live in
+[`scripts/_paper_constants.py`](scripts/_paper_constants.py); change
+either constant only with deliberate intent because every km-valued
+table in the manuscript depends on it.
 
 If any of these drift by more than the rounding shown, regenerate the
 manifest entry, examine seed differences, and check for environment

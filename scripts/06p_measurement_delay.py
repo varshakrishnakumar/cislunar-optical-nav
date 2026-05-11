@@ -33,7 +33,7 @@ from _common import ensure_src_on_path, repo_path
 ensure_src_on_path()
 from utils.units import RunUnits  # noqa: E402
 
-_KM_PER_LU = 384_400.0
+from _paper_constants import KM_PER_LU as _KM_PER_LU
 
 
 def _run_one_delay(

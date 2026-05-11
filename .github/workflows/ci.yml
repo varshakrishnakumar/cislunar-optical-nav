@@ -1,0 +1,59 @@
+name: CI
+
+# Minimal reviewer-grade smoke tests. Runs on push and PR:
+#   - paper_constants.py guards (KM_PER_LU, Q_ACC_CANONICAL)
+#   - run_case end-to-end smoke for all three filter_kinds (EKF / IEKF / UKF)
+#   - paper_artifacts/csv/ canonical bundle present and self-consistent
+#
+# Does NOT run production Monte Carlo. Per-driver wall times are documented
+# in docs/experiment_manifest.md; full regeneration is ~3 h on a developer
+# machine and is not appropriate for CI.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies (lock file)
+        run: |
+          python -m pip install --upgrade pip
+          # Lock file pins every transitive dep to what the n=1000 production
+          # was generated against. If the lock file fails to resolve on the
+          # CI image (e.g. PyMuPDF wheel), fall back to the human-curated
+          # subset; the smoke tests only need numpy/scipy/matplotlib/pyyaml.
+          pip install -r requirements-lock.txt || pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run smoke tests
+        run: pytest tests/ -v --tb=short
+
+      - name: Rebuild central figure from canonical CSVs
+        run: |
+          python scripts/06t_success_ecdf_central.py --out /tmp/06t_smoke
+          test -f /tmp/06t_smoke/06t_success_ecdf_central.png
+          test -f /tmp/06t_smoke/06t_success_ecdf_central.csv
+          test -f /tmp/06t_smoke/06t_success_ecdf_central.txt
+
+      - name: Print canonical baseline number for transparency
+        run: |
+          grep -E "^C1" /tmp/06t_smoke/06t_success_ecdf_central.txt

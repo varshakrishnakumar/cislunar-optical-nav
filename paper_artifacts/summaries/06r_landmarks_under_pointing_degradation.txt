@@ -1,0 +1,20 @@
+Landmarks Under Pointing Degradation (06r)
+==============================================================================================================
+truth = cr3bp
+
+             lm_config                 pt_mode     n   miss_med   miss_p95   pos_med     NEES  NIS_all  vr_any    vr_M    vr_L   M_off°   L_off°
+             moon_only                   fixed  1000     493.73    2305.86   1071.57  1463592.08      nan   0.000   0.000     nan   89.976      nan
+             moon_only            active_ideal  1000      61.64     228.27     19.33     5.78     1.94   1.000   1.000     nan    0.047      nan
+             moon_only           active_biased  1000     129.86     357.78     67.10    59.59     2.07   1.000   1.000     nan    0.117      nan
+             moon_only           active_lagged  1000      64.52     158.19     25.73     5.76     1.86   0.900   0.900     nan    5.024      nan
+             moon_only   active_attitude_noisy  1000      68.27     258.86     20.25     6.26     2.19   1.000   1.000     nan    0.049      nan
+     landmarks_only_L2                   fixed  1000     493.73    2305.86   1071.57  1463592.08      nan   0.000   0.000   0.000   89.976   89.294
+     landmarks_only_L2            active_ideal  1000      26.94      73.89      7.81     4.59     1.98   1.000   0.000   1.000    0.022    1.515
+     landmarks_only_L2           active_biased  1000      54.59     169.22     83.66   223.05     2.08   1.000   0.000   1.000    0.113    1.544
+     landmarks_only_L2           active_lagged  1000      27.74      73.17     10.69     4.36     1.90   0.900   0.000   0.900    5.028    4.014
+     landmarks_only_L2   active_attitude_noisy  1000      35.98     109.13     10.74     7.98     2.22   1.000   0.000   1.000    0.029    1.511
+moon_plus_landmarks_L2                   fixed  1000     493.73    2305.86   1071.57  1463592.08      nan   0.000   0.000   0.000   89.976   89.294
+moon_plus_landmarks_L2            active_ideal  1000      25.07      72.51      7.37     4.73     1.98   1.000   1.000   1.000    0.021    1.515
+moon_plus_landmarks_L2           active_biased  1000      52.87     156.12     83.91   249.28     2.07   1.000   1.000   1.000    0.112    1.543
+moon_plus_landmarks_L2           active_lagged  1000      24.76      73.07     10.49     4.44     1.91   0.900   0.900   0.900    5.036    4.017
+moon_plus_landmarks_L2   active_attitude_noisy  1000      36.20     106.88     10.14     8.35     2.22   1.000   1.000   1.000    0.028    1.513
